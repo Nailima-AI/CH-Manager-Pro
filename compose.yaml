@@ -1,0 +1,14 @@
+services:
+  ch-manager:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8899:8899"
+    volumes:
+      - ch-manager-data:/data
+      # Optional server folders; make them writable by container UID 1000.
+      # - /srv/clonehero/Songs:/songs
+      # - /srv/clonehero/Archives:/archives
+      # - /srv/clonehero/Downloads:/downloads
+volumes:
+  ch-manager-data:

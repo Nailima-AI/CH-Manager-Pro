@@ -117,7 +117,6 @@ class CHManagerApp(Adw.Application):
         self.config = configparser.ConfigParser(interpolation=None)
         self.monitoring = False
         self.backup_dir = ""
-        self.install_while_open = True
         self.library_lock = threading.Lock()
         self.load_config()
         self.connect('startup', self.on_startup)
@@ -126,7 +125,6 @@ class CHManagerApp(Adw.Application):
     def load_config(self):
         self.config.read(CONFIG_FILE)
         self.backup_dir = self.config.get("DEFAULT", "BackupDir", fallback=os.path.expanduser("~/CloneHero_Archive"))
-        self.install_while_open = self.config.getboolean("DEFAULT", "InstallWhileOpen", fallback=True)
         if not os.path.exists(self.backup_dir): os.makedirs(self.backup_dir, exist_ok=True)
         self.songs_dir = os.path.abspath(os.path.expanduser(self.config.get("DEFAULT", "SongsDir", fallback=GAME_DIR)))
         self.organization = self.config.get("DEFAULT", "Organization", fallback="none")
@@ -135,7 +133,7 @@ class CHManagerApp(Adw.Application):
         self.save_config()
 
     def save_config(self):
-        self.config['DEFAULT'].update({"BackupDir": self.backup_dir, "InstallWhileOpen": str(self.install_while_open),
+        self.config['DEFAULT'].update({"BackupDir": self.backup_dir,
                                       "SongsDir": self.songs_dir, "Organization": self.organization})
         with open(CONFIG_FILE, 'w') as f: self.config.write(f)
 
@@ -154,10 +152,6 @@ class CHManagerApp(Adw.Application):
         win = MainWindow(self)
         win.present()
         return False
-
-    def is_game_running(self):
-        try: return bool(subprocess.check_output(["pgrep", "-f", "-i", "clonehero"], stderr=subprocess.DEVNULL).strip())
-        except: return False
 
     def send_notification(self, title, body):
         for cmd in [["kdialog", "--title", title, "--passivepopup", body, "4"], ["notify-send", "-i", "input-gaming", title, body], ["zenity", "--notification", "--text", f"{title}: {body}"]]:
@@ -223,11 +217,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.switch = Gtk.Switch(); self.switch.set_valign(Gtk.Align.CENTER)
         self.switch.connect("state-set", self.on_monitor_toggle)
         self.status_row.add_suffix(self.switch); grp.add(self.status_row)
-        self.game_row = Adw.ActionRow(title=tr("game_title"), subtitle=tr("game_sub"))
-        self.game_row.set_icon_name("input-gaming-symbolic")
-        self.sw_game = Gtk.Switch(); self.sw_game.set_active(self.app.install_while_open); self.sw_game.set_valign(Gtk.Align.CENTER)
-        self.sw_game.connect("state-set", self.on_game_config_toggle)
-        self.game_row.add_suffix(self.sw_game); grp.add(self.game_row)
         p = self.stack.add_titled(page, "auto", tr("tab_auto")); p.set_icon_name("preferences-system-time-symbolic")
 
     def setup_library_tab(self):
@@ -255,10 +244,6 @@ class MainWindow(Adw.ApplicationWindow):
         grp.add(organization)
         p = self.stack.add_titled(page, "lib", tr("tab_lib")); p.set_icon_name("library-music-symbolic")
 
-    def on_game_config_toggle(self, switch, state):
-        with self.app.library_lock:
-            self.app.install_while_open = state; self.app.save_config()
-        return False
     def on_monitor_toggle(self, switch, state):
         self.app.monitoring = state
         self.monitor_generation = getattr(self, "monitor_generation", 0) + 1
@@ -269,25 +254,21 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def monitor_loop(self, generation):
-        last_check_game = 0; game_running = False
         attempted = {}
         while self.app.monitoring and generation == self.monitor_generation:
-            if time.time() - last_check_game > 5: game_running = self.app.is_game_running(); last_check_game = time.time()
             try:
                 files = [f for f in os.listdir(SYSTEM_DL_DIR) if f.lower().endswith(('.zip', '.rar', '.7z'))]
                 for f in files:
                     if not self.app.monitoring or generation != self.monitor_generation: break
                     fp = os.path.join(SYSTEM_DL_DIR, f)
                     if ".part" in f or ".crdownload" in f: continue
-                    if game_running and not self.app.install_while_open: continue
                     try:
                         s1 = os.path.getsize(fp); time.sleep(1); s2 = os.path.getsize(fp)
                         stamp = (s2, os.stat(fp).st_mtime_ns)
                         if s1 == s2 and s1 > 0 and attempted.get(fp) != stamp:
                             attempted[fp] = stamp
                             if self.secure_install(fp):
-                                if game_running: GLib.idle_add(self.app.send_notification, tr("notif_install"), tr("notif_scan"))
-                                else: GLib.idle_add(self.app.send_notification, tr("notif_install"), f"{f}")
+                                GLib.idle_add(self.app.send_notification, tr("notif_install"), f"{f}")
                                 GLib.idle_add(self.show_toast, tr("notif_install"))
                     except: pass
             except: pass

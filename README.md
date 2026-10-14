@@ -1,3 +1,15 @@
+# CH Manager Pro — Headless Web Branch
+
+This branch runs on a headless server and provides a browser interface for the full library workflow. Start with `python3 ch_web.py`; it does not require GTK or a display. The desktop version remains on `main`.
+
+**[Setup, Docker, systemd, networking, and web-interface guide → HEADLESS.md](HEADLESS.md)**
+
+Browse installed and archived songs, selectively install/remove, organize folders, review duplicates and author/game evidence, upload archives, monitor a download folder, and restore removed files from app Trash. There is **no Clone Hero process detection** on this branch.
+
+The desktop reference below describes the shared library backend; use the headless guide above for installation and browser controls.
+
+---
+
 # 🎸 CH Manager Pro — Library Management Fork
 
 A Linux/Steam Deck GTK4 application that watches Downloads, extracts Clone Hero charts, and backs up imported archives.
@@ -61,7 +73,7 @@ chmod +x ch_manager_pro_installer_v5.sh
 ./ch_manager_pro_installer_v5.sh
 ```
 
-Choose **AGGIORNA** to keep your configuration. **PULISCI** resets app settings. Installed application files and `config.ini` live in `~/.local/share/ch_manager/`; the desktop launcher appears as CH Manager Pro. `SongsDir` and `Organization` are added alongside the existing backup and in-game settings. New controls are currently English; the original English/Italian controls remain.
+Choose **AGGIORNA** to keep your configuration. **PULISCI** resets app settings. Installed application files and `config.ini` live in `~/.local/share/ch_manager/`; the desktop launcher appears as CH Manager Pro. `SongsDir` and `Organization` are added alongside the existing backup settings. New controls are currently English; the original English/Italian controls remain.
 
 To run directly from source:
 
