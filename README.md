@@ -6,6 +6,19 @@ Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-P
 
 ![Splash screen](icons/splash.png)
 
+## Archived song library (5.2)
+
+Open **Library → Browse archived songs** to browse individual songs inside downloaded ZIP, RAR, and 7z backups, including multi-song packs and nested archive folders. Search by song, artist, charter, game, or archive name. Filter to **All archived songs**, **In game folder**, or **Not in game folder**.
+
+- Select songs and use **Install selected** to copy only those songs into the configured chart install folder. The new-import organization setting also controls their destination folders. Identical installed copies are skipped.
+- Use **Remove selected from game…** to review and send matching game-folder copies to desktop Trash. Original archives stay untouched, so you can install the songs again later. All identical copies listed for the selected archived songs are included in removal.
+- Use **Refresh game state** after moving/editing songs outside the app, or **Rescan archives** after adding/removing backup archives. The window displays the archive and game paths it is managing; reopen it after changing either setting.
+- Run **Scan Songs** in Clone Hero after changing what is installed.
+
+Installed-state matching checks the full song contents (notes, audio, metadata, and other files), independent of folder location or name. Different versions remain separate. An edited song may appear **Not in game folder** even if it has the same title or chart bytes; it will not be removed as a match. This intentionally favors preserving modified songs.
+
+Archives are read locally into a temporary catalog, cleaned up when the window closes. The first scan reads/decompresses archives and compares audio files, so large collections need time and temporary disk space. RAR/7z still require the relevant 7z codecs. Unsupported or unreadable archives are listed as errors. Existing backups do not need to be re-imported. **Manage Archives** remains the separate archive-file deletion tool.
+
 ## New in this fork (5.1)
 
 - **Change chart installation folder** in Library → Chart install folder, including an SD card or another mounted drive. The setting survives restarts and updates. Existing configurations default to `~/.clonehero/Songs`.

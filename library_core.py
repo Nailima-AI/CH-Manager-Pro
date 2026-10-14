@@ -149,7 +149,7 @@ def unique_path(path, reserved=None):
     reserved = reserved if reserved is not None else set()
     result, index = path, 2
     while result.exists() or result.is_symlink() or result in reserved:
-        result = path.with_name(f'{path.name} ({index})')
+        result = path.with_name(f'{path.stem} ({index}){path.suffix}') if path.suffix.lower() in ('.zip', '.rar', '.7z') else path.with_name(f'{path.name} ({index})')
         index += 1
     reserved.add(result)
     return result
@@ -242,7 +242,7 @@ def safe_member(name):
 
 def extract_archive(source, destination):
     source, destination = Path(source), Path(destination)
-    if source.suffix.lower() == '.zip':
+    if archive_format(source) == 'zip':
         with zipfile.ZipFile(source) as archive:
             for entry in archive.infolist():
                 safe_member(entry.filename)
@@ -309,3 +309,141 @@ def install_archive(source, root, mode='none'):
                 shutil.rmtree(target)
             raise
     return installed
+
+
+@dataclass(frozen=True)
+class ArchivedSong:
+    archive: Path
+    relative_path: str
+    song: Song
+    content_hash: str
+
+
+def archive_format(path):
+    """Include numbered backups written by earlier versions (pack.zip (2))."""
+    match = re.search(r'\.(zip|rar|7z)(?: \(\d+\))?$', str(path), re.I)
+    return match[1].lower() if match else None
+
+
+def song_content_hash(path):
+    """Fingerprint every file and relative filename, independent of song-folder location."""
+    path = Path(path)
+    digest = hashlib.sha256()
+    for folder, dirs, files in os.walk(path, followlinks=False):
+        dirs.sort()
+        for name in dirs + files:
+            if (Path(folder) / name).is_symlink():
+                raise ValueError(f'Cannot fingerprint symbolic link: {name}')
+        for name in sorted(files):
+            child = Path(folder) / name
+            relative = child.relative_to(path).as_posix().encode('utf-8')
+            file_digest = hashlib.sha256()
+            with child.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    file_digest.update(chunk)
+            digest.update(len(relative).to_bytes(8, 'big'))
+            digest.update(relative)
+            digest.update(file_digest.digest())
+    return digest.hexdigest()
+
+
+class ArchiveCatalog:
+    """Window-scoped extracted catalog; source archives are always kept untouched."""
+    def __init__(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='ch-archive-library-')
+        self.entries = []
+        self.errors = []
+
+    def close(self):
+        self.temporary.cleanup()
+
+    def scan(self, backup_root):
+        root = Path(backup_root).expanduser().resolve(strict=True)
+        for folder, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = sorted(d for d in dirs if not (Path(folder) / d).is_symlink())
+            for name in sorted(files):
+                archive = Path(folder) / name
+                if archive.is_symlink() or not archive_format(archive): continue
+                sandbox = Path(self.temporary.name) / str(len(list(Path(self.temporary.name).iterdir())))
+                sandbox.mkdir()
+                try:
+                    extract_archive(archive, sandbox)
+                    songs, errors = scan_library(sandbox)
+                    self.errors.extend(f'{archive.name}: {error}' for error in errors)
+                    if not songs: self.errors.append(f'{archive.name}: No supported song charts found')
+                    for song in songs:
+                        if song.path == sandbox:
+                            if len(songs) != 1: raise ValueError('Root and nested songs are mixed')
+                        else:
+                            validate_source(song.path, sandbox)
+                        self.entries.append(ArchivedSong(archive, song.path.relative_to(sandbox).as_posix(),
+                                                         song, song_content_hash(song.path)))
+                except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, RuntimeError) as exc:
+                    self.errors.append(f'{archive.name}: {exc}')
+        return self.entries, self.errors
+
+
+def archived_installations(entries, game_root):
+    songs, errors = scan_library(game_root)
+    relevant_charts = {entry.song.chart_hash for entry in entries}
+    copies = defaultdict(list)
+    for song in songs:
+        if song.chart_hash not in relevant_charts: continue
+        try:
+            validate_source(song.path, Path(game_root).expanduser().resolve(strict=True))
+            copies[song_content_hash(song.path)].append(song.path)
+        except (OSError, ValueError) as exc:
+            errors.append(f'{song.path}: {exc}')
+    return dict(copies), errors
+
+
+def activate_archived(entries, game_root, mode='none'):
+    """Install individual archived songs; existing byte-identical copies are skipped."""
+    if mode not in ('none', 'artist', 'author', 'game'): raise ValueError('Unsupported organization mode')
+    root = Path(game_root).expanduser().resolve(strict=True)
+    copies, errors = archived_installations(entries, root)
+    if errors: raise ValueError('Cannot safely determine installed state:\n' + '\n'.join(errors))
+    installed = []
+    try:
+        for entry in entries:
+            if copies.get(entry.content_hash): continue
+            if song_content_hash(entry.song.path) != entry.content_hash:
+                raise ValueError('Archive catalog changed. Rescan archives first.')
+            parent = root if mode == 'none' else root / component(getattr(entry.song, mode))
+            if not inside(parent.resolve(), root): raise ValueError('Destination escapes game library')
+            parent.mkdir(parents=True, exist_ok=True)
+            name = entry.song.path.name if entry.relative_path != '.' else re.sub(r'\.(zip|rar|7z)(?: \(\d+\))?$', '', entry.archive.name, flags=re.I)
+            target = unique_path(parent / component(name))
+            try:
+                shutil.copytree(entry.song.path, target)
+            except Exception:
+                if target.exists(): shutil.rmtree(target)
+                raise
+            installed.append(target)
+            copies.setdefault(entry.content_hash, []).append(target)
+    except Exception:
+        for target in installed: shutil.rmtree(target)
+        raise
+    return installed
+
+
+def deactivate_archived(entries, game_root, trash, expected_paths=None):
+    """Remove only current, full-content matches through a recoverable Trash callback."""
+    root = Path(game_root).expanduser().resolve(strict=True)
+    copies, errors = archived_installations(entries, root)
+    if errors: raise ValueError('Cannot safely determine installed state:\n' + '\n'.join(errors))
+    expected = {entry.content_hash for entry in entries}
+    targets = [(path, fingerprint) for fingerprint in expected for path in copies.get(fingerprint, [])]
+    if expected_paths is not None and {p for p, _ in targets} != set(expected_paths):
+        raise ValueError('Installed copies changed. Refresh and review removal again.')
+    for path, fingerprint in targets:
+        validate_source(path, root)
+        if song_content_hash(path) != fingerprint: raise ValueError('Song changed; refresh installed state')
+    count = 0
+    for path, _ in targets:
+        try:
+            if trash(path) is False: raise OSError('Desktop Trash rejected the operation')
+        except Exception as exc:
+            raise OSError(f'{count} song folders moved to Trash before failure: {exc}') from exc
+        count += 1
+    return count

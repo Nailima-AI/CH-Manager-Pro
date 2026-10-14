@@ -7,7 +7,7 @@ import subprocess
 import configparser
 import locale
 from pathlib import Path
-from library_core import scan_library, duplicate_groups, plan_moves, apply_moves, install_archive, unique_path
+from library_core import scan_library, duplicate_groups, plan_moves, apply_moves, install_archive, unique_path, ArchiveCatalog, archived_installations, activate_archived, deactivate_archived
 import gi
 
 gi.require_version('Gtk', '4.0')
@@ -15,7 +15,7 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, GLib, Gio, Adw, GdkPixbuf
 
 # --- VERSIONE E TRADUZIONI ---
-APP_VERSION = "5.1"
+APP_VERSION = "5.2"
 
 LANG_DATA = {
     "en": {
@@ -240,6 +240,7 @@ class MainWindow(Adw.ApplicationWindow):
         add_row(tr("btn_import"), "list-add-symbolic", self.on_import_clicked)
         add_row(tr("btn_backup"), "folder-documents-symbolic", self.on_open_backup)
         add_row(tr("btn_clean_songs"), "edit-clear-symbolic", self.on_clean_songs)
+        add_row("Browse archived songs", "folder-music-symbolic", self.on_archived_songs)
         add_row(tr("btn_clean_arch"), "user-trash-symbolic", self.on_clean_archive)
         add_row(tr("btn_path"), "drive-harddisk-symbolic", self.on_change_backup)
         self.song_path_row = Adw.ActionRow(title="Chart install folder", subtitle=self.app.songs_dir)
@@ -365,6 +366,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.show_toast(tr("toast_path"))
         except: pass
     def on_clean_songs(self, _): LibraryWindow(self).present()
+    def on_archived_songs(self, _): ArchiveWindow(self).present()
     def on_clean_archive(self, _): self.show_checklist(tr("btn_clean_arch"), self.app.backup_dir, False, False)
     def show_checklist(self, title, base_path, is_dir, can_delete_backup=False):
         win = Gtk.Window(title=title, transient_for=self, modal=True, default_width=450, default_height=600)
@@ -425,6 +427,171 @@ class MainWindow(Adw.ApplicationWindow):
             else: execute_delete(False)
         btn_del.connect("clicked", on_delete_clicked)
         box.append(btn_del); win.set_child(box); win.present()
+
+class ArchiveWindow(Gtk.Window):
+    def __init__(self, owner):
+        super().__init__(title='Archived songs', transient_for=owner, default_width=760, default_height=680)
+        self.owner, self.app = owner, owner.app
+        self.game_root, self.backup_root = self.app.songs_dir, self.app.backup_dir
+        self.catalog = None
+        self.entries, self.copies = [], {}
+        self.busy, self.closed = False, False
+        self.connect('close-request', self.on_close)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for side in ('top', 'bottom', 'start', 'end'): getattr(box, 'set_margin_' + side)(12)
+        self.status = Gtk.Label(label='Loading archives…', xalign=0, wrap=True, selectable=True)
+        box.append(self.status)
+        box.append(Gtk.Label(label='Choose individual songs from packs. Install copies songs into the game folder;\n'
+                                   'Remove sends matching game copies to Trash. Original archives stay available.', xalign=0, wrap=True))
+        self.search = Gtk.SearchEntry(placeholder_text='Search archived song, artist, charter, game or archive')
+        self.search.connect('search-changed', lambda _: self.render()); box.append(self.search)
+        controls = Gtk.Box(spacing=8)
+        self.filter = Gtk.DropDown.new_from_strings(['All archived songs', 'In game folder', 'Not in game folder'])
+        self.filter.connect('notify::selected', lambda *_: self.render()); controls.append(self.filter)
+        self.refresh_button = Gtk.Button(label='Refresh game state')
+        self.refresh_button.connect('clicked', lambda _: self.refresh(False)); controls.append(self.refresh_button)
+        self.rescan_button = Gtk.Button(label='Rescan archives')
+        self.rescan_button.connect('clicked', lambda _: self.refresh(True)); controls.append(self.rescan_button)
+        box.append(controls)
+        self.listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        box.append(Gtk.ScrolledWindow(child=self.listbox, vexpand=True))
+        footer = Gtk.Box(spacing=8)
+        select = Gtk.Button(label='Select visible'); select.connect('clicked', self.select_visible); footer.append(select)
+        self.install_button = Gtk.Button(label='Install selected')
+        self.install_button.connect('clicked', self.install_selected); footer.append(self.install_button)
+        self.remove_button = Gtk.Button(label='Remove selected from game…')
+        self.remove_button.connect('clicked', self.remove_selected); footer.append(self.remove_button)
+        box.append(footer); self.set_child(box)
+        self.refresh(True)
+
+    def on_close(self, _):
+        self.closed = True
+        if self.catalog and not self.busy: self.catalog.close(); self.catalog = None
+        return False
+
+    def set_busy(self, busy, text=None):
+        self.busy = busy
+        for button in (self.refresh_button, self.rescan_button, self.install_button, self.remove_button):
+            button.set_sensitive(not busy)
+        if text: self.status.set_text(text)
+
+    def refresh(self, archives=False):
+        if self.busy or self.closed: return
+        self.set_busy(True, 'Reading archives and comparing song files (including audio). Large collections can take a while…')
+        def worker():
+            catalog = None
+            try:
+                with self.app.library_lock:
+                    if archives or not self.catalog:
+                        catalog = ArchiveCatalog(); entries, archive_errors = catalog.scan(self.backup_root)
+                    else:
+                        entries, archive_errors = self.entries, self.catalog.errors
+                    copies, game_errors = archived_installations(entries, self.game_root)
+                GLib.idle_add(self.refreshed, catalog, entries, copies, list(archive_errors) + game_errors)
+            except Exception as exc:
+                if catalog: catalog.close()
+                GLib.idle_add(self.failed, str(exc))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def refreshed(self, catalog, entries, copies, errors):
+        if catalog:
+            if self.catalog: self.catalog.close()
+            self.catalog = catalog
+        self.set_busy(False)
+        if self.closed:
+            if self.catalog: self.catalog.close(); self.catalog = None
+            return
+        self.entries, self.copies = entries, copies
+        active = sum(bool(copies.get(entry.content_hash)) for entry in entries)
+        self.status.set_text(f'{len(entries)} archived song entries · {active} in game · {len(errors)} errors\n'
+                             f'Archive: {self.backup_root}\nGame folder: {self.game_root}' +
+                             ('\n' + '\n'.join(errors) if errors else ''))
+        self.render()
+
+    def failed(self, message):
+        self.set_busy(False, message)
+        if self.closed and self.catalog: self.catalog.close(); self.catalog = None
+
+    def render(self):
+        if not hasattr(self, 'listbox') or self.closed: return
+        row = self.listbox.get_first_child()
+        while row:
+            following = row.get_next_sibling(); self.listbox.remove(row); row = following
+        query, state = self.search.get_text().strip().casefold(), self.filter.get_selected()
+        for entry in sorted(self.entries, key=lambda e: (e.song.artist.casefold(), e.song.name.casefold(), str(e.archive))):
+            song = entry.song; paths = self.copies.get(entry.content_hash, [])
+            if state == 1 and not paths or state == 2 and paths: continue
+            if query not in f'{song.name} {song.artist} {song.author} {song.game} {entry.archive} {entry.relative_path}'.casefold(): continue
+            row = Gtk.ListBoxRow(); content = Gtk.Box(spacing=8)
+            row.check = Gtk.CheckButton(); row.entry = entry; content.append(row.check)
+            details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True)
+            title = Gtk.Label(label=f'{song.artist} — {song.name}', xalign=0, wrap=True)
+            title.add_css_class('heading'); details.append(title)
+            text = (f'In game folder ({len(paths)} matching copies)' if paths else 'Not in game folder')
+            text += f'\nChart author: {song.author} · Source: {song.game} ({song.game_evidence})'
+            text += f'\nArchive: {entry.archive.relative_to(Path(self.backup_root).resolve())} / {entry.relative_path}'
+            if paths: text += '\nGame: ' + '\n'.join(str(p.relative_to(Path(self.game_root).resolve())) for p in paths)
+            details.append(Gtk.Label(label=text, xalign=0, wrap=True, selectable=True)); content.append(details)
+            for side in ('top', 'bottom', 'start', 'end'): getattr(content, 'set_margin_' + side)(8)
+            row.set_child(content); self.listbox.append(row)
+
+    def select_visible(self, _):
+        row = self.listbox.get_first_child()
+        while row: row.check.set_active(True); row = row.get_next_sibling()
+
+    def selected(self):
+        entries = []; row = self.listbox.get_first_child()
+        while row:
+            if row.check.get_active(): entries.append(row.entry)
+            row = row.get_next_sibling()
+        return entries
+
+    def operate(self, entries, remove=False, expected_paths=None):
+        if self.busy or self.closed: return
+        if not entries: self.owner.show_toast('Select archived songs first'); return
+        self.set_busy(True, 'Updating game folder…')
+        def worker():
+            try:
+                with self.app.library_lock:
+                    if remove:
+                        count = deactivate_archived(entries, self.game_root,
+                            lambda path: Gio.File.new_for_path(str(path)).trash(None), expected_paths=expected_paths)
+                    else:
+                        count = len(activate_archived(entries, self.game_root, self.app.organization))
+                GLib.idle_add(self.updated, count)
+            except Exception as exc: GLib.idle_add(self.operation_failed, str(exc))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def updated(self, count):
+        self.set_busy(False)
+        self.owner.show_toast(f'Updated {count} game song folders. Run Scan Songs in Clone Hero.')
+        if self.closed:
+            if self.catalog: self.catalog.close(); self.catalog = None
+        else: self.refresh(False)
+
+    def operation_failed(self, message):
+        self.set_busy(False)
+        if not self.closed: self.owner.show_error(message)
+        self.updated(0)
+
+    def install_selected(self, _): self.operate(self.selected())
+
+    def remove_selected(self, _):
+        if self.busy: return
+        entries = self.selected()
+        paths = sorted({p for entry in entries for p in self.copies.get(entry.content_hash, [])})
+        if not paths: self.owner.show_toast('No matching installed song copies selected'); return
+        dialog = Adw.MessageDialog(transient_for=self, heading=f'Remove {len(paths)} song folders from the game?',
+            body='Matching game copies will move to desktop Trash. Original archives are kept.\n\n' + '\n'.join(str(p) for p in paths))
+        dialog.add_response('cancel', 'Cancel'); dialog.add_response('remove', 'Remove from game')
+        dialog.set_default_response('cancel'); dialog.set_close_response('cancel')
+        dialog.set_response_appearance('remove', Adw.ResponseAppearance.DESTRUCTIVE)
+        def response(dialog, result):
+            dialog.close()
+            if result == 'remove': self.operate(entries, True, paths)
+        dialog.connect('response', response); dialog.present()
+
+
 
 class LibraryWindow(Gtk.Window):
     def __init__(self, owner):

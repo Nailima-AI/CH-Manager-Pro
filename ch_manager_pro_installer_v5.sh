@@ -4,7 +4,7 @@
 set -e
 set -o pipefail
 APP_NAME="CH Manager Pro"
-NEW_VERSION_TAG="5.1"
+NEW_VERSION_TAG="5.2"
 
 # PERCORSI
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
