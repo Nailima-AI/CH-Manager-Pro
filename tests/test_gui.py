@@ -63,6 +63,48 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(len(window.songs), 2)
             app.load_config()
             self.assertEqual(app.songs_dir, str(songs_dir))
+            import zipfile
+            archive_path = Path(app.backup_dir) / 'Pack.zip'
+            with zipfile.ZipFile(archive_path, 'w') as archive:
+                for child in (songs_dir / 'Favorites/First').iterdir():
+                    archive.write(child, 'Pack/First/' + child.name)
+                archive.writestr('Pack/ArchiveOnly/notes.mid', b'new archived notes')
+                archive.writestr('Pack/ArchiveOnly/song.ini', '[song]\nname=ArchiveOnly\nartist=Band\ncharter=Another')
+            archived = manager.ArchiveWindow(owner)
+            self.addCleanup(archived.close)
+            wait_for(lambda: not archived.busy)
+            self.assertEqual(len(archived.entries), 2)
+            self.assertEqual(sum(bool(archived.copies.get(e.content_hash)) for e in archived.entries), 1)
+            archived.filter.set_selected(2)
+            archived.select_visible(None)
+            self.assertEqual(len(archived.selected()), 1)
+            archived.install_selected(None)
+            wait_for(lambda: not archived.busy and len(archived.copies) == 2)
+            self.assertTrue(archive_path.exists())
+            archived.filter.set_selected(1)
+            row = archived.listbox.get_first_child()
+            while row:
+                row.check.set_active(row.entry.song.name == 'ArchiveOnly')
+                row = row.get_next_sibling()
+            archived.remove_selected(None)
+            confirmation = next(w for w in Gtk.Window.list_toplevels()
+                                if isinstance(w, manager.Adw.MessageDialog) and 'Remove 1 song' in w.get_heading())
+            # Keep the GUI smoke test's Trash local to its temporary fixture.
+            from unittest.mock import patch
+            from library_core import deactivate_archived
+            import shutil
+            local_trash = Path(temporary) / 'Trash'; local_trash.mkdir()
+            def deactivate(entries, root, trash, expected_paths=None):
+                return deactivate_archived(entries, root,
+                    lambda path: bool(shutil.move(str(path), str(local_trash / path.name))), expected_paths)
+            with patch.object(manager, 'deactivate_archived', deactivate):
+                confirmation.emit('response', 'remove')
+                wait_for(lambda: not archived.busy and len(archived.copies) == 1)
+            self.assertTrue(archive_path.exists())
+            self.assertTrue((local_trash / 'ArchiveOnly/notes.mid').exists())
+            archived.filter.set_selected(2); archived.select_visible(None); archived.install_selected(None)
+            wait_for(lambda: not archived.busy and len(archived.copies) == 2)
+            self.assertTrue((songs_dir / 'Another/ArchiveOnly/notes.mid').exists())
 
 
 if __name__ == '__main__': unittest.main()
