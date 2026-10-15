@@ -57,6 +57,7 @@ def run():
                         assert not page.locator('#overview').evaluate('(e)=>e.open')
                         for button in page.locator('.mobile-nav button').all():
                             box=button.bounding_box();assert box['height']>=44 and box['width']>=44
+                        page.screenshot(path=str(output/f'phone-library-{width}.png'))
                         page.locator('.song-extra summary').click()
                         assert page.locator('.song-extra').evaluate('(e)=>e.open')
                         # A real polling refresh must preserve expanded details.
@@ -68,7 +69,7 @@ def run():
                         assert toolbar['y']+toolbar['height']<=nav['y']+1
                         assert toolbar['y']>=0
                         no_overflow()
-                        page.screenshot(path=str(output/f'phone-selection-{width}.png'),full_page=True)
+                        page.screenshot(path=str(output/f'phone-selection-{width}.png'),full_page=False)
                         page.locator('.song-select').click()
                         expect(page.locator('.bulk-actions')).not_to_be_visible()
                     else:
@@ -79,7 +80,8 @@ def run():
                     navigate('duplicates');expect(page.locator('#duplicate-groups .duplicate-group')).to_have_count(1)
                     if mobile:
                         page.locator('.hash-disclosure summary').first.click()
-                        page.screenshot(path=str(output/f'phone-duplicates-{width}.png'),full_page=True)
+                        page.locator('.duplicate-group').first.scroll_into_view_if_needed()
+                        page.screenshot(path=str(output/f'phone-duplicates-{width}.png'),full_page=False)
                     no_overflow()
                     navigate('settings');expect(page.locator('#settings-panel')).to_be_visible()
                     page.locator('[name=songs_dir]').focus();no_overflow()
