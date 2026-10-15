@@ -160,3 +160,24 @@ jobs:
       - name: Clean up disposable CI containers and volume
         if: always()
         run: docker compose down --volumes --remove-orphans
+  responsive-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test-only browser dependencies
+        run: |
+          python3 -m venv /tmp/ch-ui
+          /tmp/ch-ui/bin/pip install playwright==1.64.0
+          /tmp/ch-ui/bin/python -m playwright install --with-deps chromium
+      - name: Phone navigation and responsive layout checks
+        env:
+          CH_UI_SCREENSHOTS: mobile-screenshots
+        run: /tmp/ch-ui/bin/python tests/browser_mobile.py
+      - name: Save responsive screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-screenshots
+          path: mobile-screenshots/
+          if-no-files-found: ignore
