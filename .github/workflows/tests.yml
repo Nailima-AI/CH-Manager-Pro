@@ -1,4 +1,4 @@
-name: Library and GTK checks
+name: Headless web and library checks
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
@@ -14,6 +14,7 @@ jobs:
       - name: Syntax checks
         run: |
           bash -n ch_manager_pro_installer_v5.sh
-          /usr/bin/python3 -m py_compile ch_manager_pro.py library_core.py
+          node --check web/app.js
+          /usr/bin/python3 -m py_compile ch_manager_pro.py library_core.py ch_web.py
       - name: Backend and real GTK integration tests
         run: dbus-run-session -- xvfb-run -a /usr/bin/python3 -m unittest discover -s tests -v
