@@ -55,6 +55,151 @@ class Song:
     warnings: tuple = ()
 
 
+class SngReader:
+    """Read SNGPKG v1 using the public mdsitton/SngFileFormat specification.
+
+    Indexes are bounded before allocation; payloads are decoded in streaming chunks.
+    This reader never executes or extracts the embedded files.
+    """
+    TABLES = tuple(bytes(b ^ key for b in range(256)) for key in range(256))
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.metadata, self.files = {}, {}
+        size = self.path.stat().st_size
+        with self.path.open('rb') as stream:
+            def take(count, end=size):
+                if count < 0 or stream.tell() + count > end:
+                    raise ValueError('Truncated or invalid SNG section')
+                data = stream.read(count)
+                if len(data) != count: raise ValueError('Truncated SNG file')
+                return data
+            def number(count=8, end=size):
+                return int.from_bytes(take(count, end), 'little')
+            def section(limit):
+                length = number()
+                if length > limit or stream.tell() + length > size:
+                    raise ValueError('Invalid or oversized SNG index section')
+                return stream.tell() + length
+            def text(count, end):
+                try: value = take(count, end).decode('utf-8')
+                except UnicodeDecodeError as exc: raise ValueError('Invalid UTF-8 in SNG') from exc
+                if '\x00' in value: raise ValueError('NUL in SNG text')
+                return value
+            if take(6) != b'SNGPKG': raise ValueError('Not a Clone Hero SNGPKG file')
+            if number(4) != 1: raise ValueError('Unsupported SNG version (supported: 1)')
+            self.mask = take(16)
+            end = section(16 * 1024**2)
+            count = number(end=end)
+            if count > 10000: raise ValueError('Too many SNG metadata fields')
+            for _ in range(count):
+                key = text(number(4, end), end).lower()
+                value = text(number(4, end), end)
+                if not key or any(c in key for c in '\r\n=;[]') or any(c in value for c in '\r\n'):
+                    raise ValueError('SNG metadata cannot safely represent song.ini')
+                if key in self.metadata: raise ValueError('Duplicate SNG metadata key')
+                self.metadata[key] = value
+            if stream.tell() != end: raise ValueError('Invalid SNG metadata length')
+            end = section(16 * 1024**2)
+            count = number(end=end)
+            if count > 100000: raise ValueError('Too many SNG file entries')
+            seen = set()
+            for _ in range(count):
+                name = text(number(1, end), end)
+                safe_member(name)
+                if not name or '\\' in name or any(ord(c) < 32 for c in name):
+                    raise ValueError('Invalid SNG member name')
+                parts = PurePosixPath(name).parts
+                if any(p in ('', '.', '..') for p in name.split('/')) or any(':' in p for p in parts):
+                    raise ValueError('Invalid SNG member path')
+                if name.casefold() in seen:
+                    raise ValueError('Duplicate SNG file entry')
+                if Path(name).suffix.lower() in ('.exe','.bat','.sh','.cmd','.com','.ps1'):
+                    raise ValueError('Unsafe file in SNG')
+                seen.add(name.casefold())
+                length, offset = number(end=end), number(end=end)
+                self.files[name] = (offset, length)
+            if stream.tell() != end: raise ValueError('Invalid SNG file-index length')
+            data_length = number()
+            data_start = stream.tell()
+            if data_start + data_length != size: raise ValueError('Invalid SNG data section length')
+            ranges = sorted((offset, offset+length) for offset,length in self.files.values())
+            previous = data_start
+            for start, finish in ranges:
+                if start < previous or finish > size: raise ValueError('Overlapping or out-of-range SNG data')
+                previous = finish
+            names = {name.casefold() for name in self.files}
+            if not CHARTS & names: raise ValueError('SNG has no supported root chart')
+            if 'song.ini' in names: raise ValueError('SNG song.ini conflicts with container metadata')
+            for name in names:
+                if any('/'.join(name.split('/')[:i]) in names for i in range(1,len(name.split('/')))):
+                    raise ValueError('Conflicting SNG member paths')
+
+    def ini_bytes(self):
+        return ('[song]\n' + ''.join(f'{k} = {v}\n' for k,v in sorted(self.metadata.items()))).encode('utf-8')
+
+    def chunks(self, name):
+        offset, remaining = self.files[name]
+        position = 0
+        with self.path.open('rb') as stream:
+            stream.seek(offset)
+            while remaining:
+                data = stream.read(min(1024*1024, remaining))
+                if not data: raise ValueError('SNG changed or was truncated during reading')
+                decoded = bytearray(len(data))
+                for i in range(min(256, len(data))):
+                    key = self.mask[(position+i) % 16] ^ ((position+i) & 255)
+                    decoded[i::256] = data[i::256].translate(self.TABLES[key])
+                yield bytes(decoded)
+                position += len(data); remaining -= len(data)
+
+    def file_hash(self, name):
+        digest = hashlib.sha256()
+        for chunk in self.chunks(name): digest.update(chunk)
+        return digest.hexdigest()
+
+    def content_hash(self):
+        # Match the existing folder hash ordering, including generated song.ini.
+        names = list(self.files) + ['song.ini']
+        digest = hashlib.sha256()
+        # os.walk visits root files first, then subdirectories depth-first.
+        def order(prefix=''):
+            direct = sorted(n for n in names if n.rpartition('/')[0] == prefix)
+            yield from direct
+            children = sorted({n[len(prefix)+1:].split('/')[0] if prefix else n.split('/')[0]
+                               for n in names if (n.startswith(prefix+'/') if prefix else True)
+                               and '/' in (n[len(prefix)+1:] if prefix else n)})
+            for child in children: yield from order(prefix+'/'+child if prefix else child)
+        for name in order():
+            relative = name.encode('utf-8')
+            file_hash = hashlib.sha256(self.ini_bytes()).hexdigest() if name == 'song.ini' else self.file_hash(name)
+            digest.update(len(relative).to_bytes(8,'big')); digest.update(relative); digest.update(bytes.fromhex(file_hash))
+        return digest.hexdigest()
+
+
+def read_sng_song(path, root):
+    reader = SngReader(path)
+    # Reuse chart/INI precedence and source-game evidence without unpacking audio.
+    with tempfile.TemporaryDirectory(prefix='ch-sng-metadata-') as temporary:
+        folder = Path(temporary)
+        (folder/'song.ini').write_bytes(reader.ini_bytes())
+        for name in reader.files:
+            if name.lower() in CHARTS:
+                if reader.files[name][1] > 32 * 1024**2: raise ValueError('SNG chart exceeds 32 MiB metadata-scan limit')
+                with (folder/name).open('wb') as target:
+                    for chunk in reader.chunks(name): target.write(chunk)
+        parsed = read_song(folder, folder)
+    # Parent-folder evidence must come from the real file location.
+    game, evidence = parsed.game, parsed.game_evidence
+    if game == UNKNOWN:
+        for parent in reversed(Path(path).relative_to(root).parts[:-1]):
+            matches = [v for k,v in ICON_GAMES.items() if normalized(parent) in (normalized(k),normalized(v))]
+            if len(matches) == 1: game,evidence=matches[0],f'Likely: parent folder {parent}'; break
+    name = clean(reader.metadata.get('name','')) or (parsed.name if parsed.name != folder.name else Path(path).stem)
+    return Song(Path(path), name, parsed.artist,
+                parsed.author, parsed.author_evidence, game, evidence, parsed.chart_hash, parsed.warnings)
+
+
 def read_song(path, root):
     files = {p.name.lower(): p for p in path.iterdir() if p.is_file() and not p.is_symlink()}
     meta, warnings = {}, []
@@ -121,6 +266,11 @@ def scan_library(root):
         path = Path(folder)
         dirs[:] = sorted(d for d in dirs if not (path / d).is_symlink())
         lowered = {n.lower() for n in names if not (path / n).is_symlink()}
+        for name in sorted(names):
+            child = path / name
+            if not child.is_symlink() and archive_format(child) == 'sng':
+                try: songs.append(read_sng_song(child, root))
+                except (OSError, ValueError) as exc: errors.append(f'{child}: {exc}')
         if CHARTS & lowered:
             try:
                 songs.append(read_song(path, root))
@@ -149,7 +299,7 @@ def unique_path(path, reserved=None):
     reserved = reserved if reserved is not None else set()
     result, index = path, 2
     while result.exists() or result.is_symlink() or result in reserved:
-        result = path.with_name(f'{path.stem} ({index}){path.suffix}') if path.suffix.lower() in ('.zip', '.rar', '.7z') else path.with_name(f'{path.name} ({index})')
+        result = path.with_name(f'{path.stem} ({index}){path.suffix}') if path.suffix.lower() in ('.zip', '.rar', '.7z', '.sng') else path.with_name(f'{path.name} ({index})')
         index += 1
     reserved.add(result)
     return result
@@ -161,14 +311,18 @@ def inside(path, root):
 
 def validate_source(path, root):
     path = Path(path)
-    if path.is_symlink() or not path.is_dir() or not inside(path.resolve(), root) or path.resolve() == root:
-        raise ValueError(f'Not a movable song folder: {path}')
+    if path.is_symlink() or not inside(path.resolve(), root) or path.resolve() == root:
+        raise ValueError(f'Not a movable song: {path}')
+    if path.is_file():
+        if archive_format(path) != 'sng': raise ValueError('Not a supported song file')
+        return
+    if not path.is_dir(): raise ValueError('Song is missing')
     for folder, dirs, files in os.walk(path, followlinks=False):
         for name in dirs + files:
             child = Path(folder) / name
             if child.is_symlink():
                 raise ValueError(f'Symbolic links cannot be moved: {child}')
-        if Path(folder) != path and CHARTS & {f.lower() for f in files}:
+        if (Path(folder) != path and CHARTS & {f.lower() for f in files}) or any(archive_format(f) == 'sng' for f in files):
             raise ValueError(f'Nested song folders require manual review: {path}')
 
 
@@ -214,6 +368,12 @@ def apply_moves(moves, root):
         for source, target in moves:
             source, target = Path(source), Path(target)
             target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_file():
+                # Reserve the target exclusively before replacing it with the native SNG.
+                with target.open('xb'): pass
+                try: source.rename(target)
+                except Exception: target.unlink(); raise
+                completed.append((source,target)); continue
             # mkdir, unlike shutil.move, refuses an existing destination, even empty.
             target.mkdir()
             try:
@@ -242,7 +402,11 @@ def safe_member(name):
 
 def extract_archive(source, destination):
     source, destination = Path(source), Path(destination)
-    if archive_format(source) == 'zip':
+    if archive_format(source) == 'sng':
+        SngReader(source)
+        name = re.sub(r'(?i)\.sng(?: \(\d+\))?$', '', source.name) + '.sng'
+        shutil.copy2(source, Path(destination) / name)
+    elif archive_format(source) == 'zip':
         with zipfile.ZipFile(source) as archive:
             for entry in archive.infolist():
                 safe_member(entry.filename)
@@ -273,6 +437,18 @@ def extract_archive(source, destination):
                 raise ValueError(f'Unsafe file in archive: {name}')
 
 
+def copy_song(source, target):
+    if Path(source).is_dir(): return shutil.copytree(source, target)
+    with Path(source).open('rb') as stream, Path(target).open('xb') as output:
+        shutil.copyfileobj(stream, output)
+    return target
+
+
+def remove_song(path):
+    if Path(path).is_dir(): shutil.rmtree(path)
+    else: Path(path).unlink()
+
+
 def install_archive(source, root, mode='none'):
     root = Path(root).expanduser().resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='ch-manager-') as temporary:
@@ -298,15 +474,15 @@ def install_archive(source, root, mode='none'):
                 target = unique_path(parent / component(name))
                 # copytree refuses collisions and leaves the archive available on failure.
                 try:
-                    shutil.copytree(song.path, target)
+                    copy_song(song.path, target)
                 except Exception:
                     if target.exists():
-                        shutil.rmtree(target)
+                        remove_song(target)
                     raise
                 installed.append(target)
         except Exception:
             for target in installed:
-                shutil.rmtree(target)
+                remove_song(target)
             raise
     return installed
 
@@ -321,13 +497,14 @@ class ArchivedSong:
 
 def archive_format(path):
     """Include numbered backups written by earlier versions (pack.zip (2))."""
-    match = re.search(r'\.(zip|rar|7z)(?: \(\d+\))?$', str(path), re.I)
+    match = re.search(r'\.(zip|rar|7z|sng)(?: \(\d+\))?$', str(path), re.I)
     return match[1].lower() if match else None
 
 
 def song_content_hash(path):
     """Fingerprint every file and relative filename, independent of song-folder location."""
     path = Path(path)
+    if path.is_file(): return SngReader(path).content_hash()
     digest = hashlib.sha256()
     for folder, dirs, files in os.walk(path, followlinks=False):
         dirs.sort()
@@ -364,6 +541,12 @@ class ArchiveCatalog:
             for name in sorted(files):
                 archive = Path(folder) / name
                 if archive.is_symlink() or not archive_format(archive): continue
+                if archive_format(archive) == 'sng':
+                    try:
+                        song = read_sng_song(archive, root)
+                        self.entries.append(ArchivedSong(archive, '.', song, song_content_hash(archive)))
+                    except (OSError, ValueError) as exc: self.errors.append(f'{archive.name}: {exc}')
+                    continue
                 sandbox = Path(self.temporary.name) / str(len(list(Path(self.temporary.name).iterdir())))
                 sandbox.mkdir()
                 try:
@@ -383,7 +566,7 @@ class ArchiveCatalog:
         return self.entries, self.errors
 
 
-def archived_installations(entries, game_root):
+def archived_installations(entries, game_root, content_hashes=None):
     songs, errors = scan_library(game_root)
     relevant_charts = {entry.song.chart_hash for entry in entries}
     copies = defaultdict(list)
@@ -391,7 +574,9 @@ def archived_installations(entries, game_root):
         if song.chart_hash not in relevant_charts: continue
         try:
             validate_source(song.path, Path(game_root).expanduser().resolve(strict=True))
-            copies[song_content_hash(song.path)].append(song.path)
+            fingerprint = song_content_hash(song.path)
+            if content_hashes is not None: content_hashes[song.path] = fingerprint
+            copies[fingerprint].append(song.path)
         except (OSError, ValueError) as exc:
             errors.append(f'{song.path}: {exc}')
     return dict(copies), errors
@@ -412,17 +597,18 @@ def activate_archived(entries, game_root, mode='none'):
             parent = root if mode == 'none' else root / component(getattr(entry.song, mode))
             if not inside(parent.resolve(), root): raise ValueError('Destination escapes game library')
             parent.mkdir(parents=True, exist_ok=True)
-            name = entry.song.path.name if entry.relative_path != '.' else re.sub(r'\.(zip|rar|7z)(?: \(\d+\))?$', '', entry.archive.name, flags=re.I)
+            name = entry.song.path.name if entry.relative_path != '.' or entry.song.path.is_file() else re.sub(r'\.(zip|rar|7z|sng)(?: \(\d+\))?$', '', entry.archive.name, flags=re.I)
+            if entry.song.path.is_file(): name = re.sub(r'(?i)\.sng(?: \(\d+\))?$', '', name) + '.sng'
             target = unique_path(parent / component(name))
             try:
-                shutil.copytree(entry.song.path, target)
+                copy_song(entry.song.path, target)
             except Exception:
-                if target.exists(): shutil.rmtree(target)
+                if target.exists(): remove_song(target)
                 raise
             installed.append(target)
             copies.setdefault(entry.content_hash, []).append(target)
     except Exception:
-        for target in installed: shutil.rmtree(target)
+        for target in installed: remove_song(target)
         raise
     return installed
 
