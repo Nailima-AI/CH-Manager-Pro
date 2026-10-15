@@ -51,7 +51,7 @@ $('open-more').addEventListener('click',()=>{$('more-dialog').showModal();$('ope
 $('more-dialog').addEventListener('close',()=>{$('open-more').setAttribute('aria-expanded','false');});
 $('mobile-logout').addEventListener('click',()=>{$('more-dialog').close();$('logout').click();});
 function resizeLayout(){
- $('overview').open=!mobileView.matches;
+ $('overview').open=!mobileView.matches;document.querySelector('.duplicate-help').open=!mobileView.matches;
  if($('more-dialog').open)$('more-dialog').close();
  if(state)render();updateSelectionHeight();
 }
