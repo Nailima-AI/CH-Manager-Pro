@@ -20,9 +20,10 @@ from urllib.parse import parse_qs, urlsplit
 
 from library_core import (ArchiveCatalog, activate_archived, archive_format,
     archived_installations, apply_moves, deactivate_archived, duplicate_groups,
-    install_archive, plan_moves, scan_library, unique_path, validate_source, inside)
+    install_archive, plan_moves, scan_library, unique_path, validate_source, inside,
+    song_content_hash, normalized, UNKNOWN)
 
-VERSION = '6.0-web'
+VERSION = '6.1-web'
 ASSETS = Path(__file__).resolve().parent / 'web'
 
 
@@ -36,6 +37,30 @@ def atomic_json(path, value):
 
 def identifier(kind, path):
     return hashlib.sha256((kind + ':' + str(path)).encode()).hexdigest()[:32]
+
+
+def duplicate_review_groups(items):
+    """Compare all locations, excluding an ordinary one-game/one-backup pair."""
+    from collections import defaultdict
+    groups = []
+    def add(category, key, members):
+        if len(members) < 2: return
+        if category == 'exact' and len(members) == 2 and {m['scope'] for m in members} == {'installed','archived'}:
+            return
+        if category == 'chart' and len({m['content_hash'] for m in members}) < 2: return
+        if category == 'metadata' and len({m['chart_hash'] for m in members}) < 2: return
+        groups.append(dict(id=identifier(category,key), category=category,
+            kind={'exact':'Identical song content', 'chart':'Identical chart; other song content differs',
+                  'metadata':'Possible duplicate: same title and artist, different charts'}[category],
+            ids=[m['id'] for m in members]))
+    for category, field in [('exact','content_hash'),('chart','chart_hash'),('metadata',None)]:
+        buckets = defaultdict(list)
+        for item in items:
+            key = item[field] if field else (normalized(item['artist']),normalized(item['name']))
+            if (field and not key) or (not field and (item['artist']==UNKNOWN or item['name']==UNKNOWN or not all(key))): continue
+            buckets[key].append(item)
+        for key, members in buckets.items(): add(category,str(key),members)
+    return groups
 
 
 class Service:
@@ -146,7 +171,8 @@ class Service:
             self.catalog = catalog
             self.entries = {identifier('entry', str(e.archive) + ':' + e.relative_path): e for e in entries}
         entries = list(self.entries.values())
-        copies, game_errors = archived_installations(entries, root)
+        content_hashes = {}
+        copies, game_errors = archived_installations(entries, root, content_hashes)
         errors += self.catalog.errors + game_errors
         self.songs = {identifier('song', song.path): song for song in songs}
         self.archives = {}
@@ -161,10 +187,24 @@ class Service:
             return dict(name=song.name, artist=song.artist, author=song.author, game=song.game,
                         author_evidence=song.author_evidence, game_evidence=song.game_evidence,
                         warnings=song.warnings)
-        groups = [dict(kind=kind, ids=[identifier('song', s.path) for s in group])
-                  for kind, group in duplicate_groups(songs)]
+        duplicate_items = []
+        for key, song in self.songs.items():
+            try:
+                fingerprint = content_hashes.get(song.path) or song_content_hash(song.path)
+            except (OSError,ValueError) as exc:
+                errors.append(f'{song.path}: {exc}'); fingerprint = ''
+            duplicate_items.append(dict(id=key, scope='installed', path=str(song.path.relative_to(root.resolve())),
+                chart_hash=song.chart_hash, content_hash=fingerprint,
+                format='SNG' if song.path.is_file() else 'Folder', **describe(song)))
+        for key, entry in self.entries.items():
+            duplicate_items.append(dict(id=key, scope='archived', archive=str(entry.archive.relative_to(backup)),
+                archive_path=entry.relative_path, archive_id=identifier('archive',entry.archive),
+                chart_hash=entry.song.chart_hash, content_hash=entry.content_hash,
+                installed=len(copies.get(entry.content_hash,[])),
+                format='SNG' if entry.song.path.is_file() else 'Folder', **describe(entry.song)))
+        groups = duplicate_review_groups(duplicate_items)
         with self.lock:
-            self.snapshot = dict(config=dict(self.config), errors=list(dict.fromkeys(errors)), duplicates=groups,
+            self.snapshot = dict(config=dict(self.config), errors=list(dict.fromkeys(errors)), duplicates=groups, duplicate_items=duplicate_items,
                 songs=[dict(id=key, path=str(s.path.relative_to(root.resolve())), **describe(s)) for key, s in self.songs.items()],
                 archived=[dict(id=key, archive=str(e.archive.relative_to(backup)), archive_path=e.relative_path,
                     installed=len(copies.get(e.content_hash, [])), installed_paths=[str(p.relative_to(root.resolve())) for p in copies.get(e.content_hash, [])],
@@ -435,7 +475,7 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > self.server.max_upload: return self.respond(413, {'error':'Archive exceeds configured upload limit'})
         params = parse_qs(urlsplit(self.path).query)
         filename = params.get('name',[''])[0]
-        if Path(filename).name != filename or '\\' in filename or not archive_format(filename): raise ValueError('Choose a ZIP, RAR or 7z file')
+        if Path(filename).name != filename or '\\' in filename or not archive_format(filename): raise ValueError('Choose a ZIP, RAR, 7z or SNG file')
         with self.server.service.upload_lock:
             path = unique_path(self.server.service.upload_dir / filename)
             try:
