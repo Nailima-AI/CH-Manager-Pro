@@ -132,6 +132,25 @@ jobs:
           assert current['config']['organization'] == 'author' and not current['config']['auto_install']
           assert not current['errors'], current['errors']
           print('PASS: container recreation preserves token, settings, archive catalog and installed song')
+          # Exercise native SNG and duplicate review through the built container.
+          import sys
+          sys.path.insert(0, 'tests')
+          from test_sng import sng_bytes
+          for name in ('First.sng', 'Second.sng'):
+              upload = json.loads(request('/api/upload?name=' + name, raw=sng_bytes(), expected=201)[1])['upload']
+              action('import', upload=upload, install=False)
+          current = state()
+          sng_entries = [e for e in current['archived'] if e['name'] == 'SNG Song']
+          assert len(sng_entries) == 2
+          assert any(g['category'] == 'exact' and set(e['id'] for e in sng_entries) <= set(g['ids']) for g in current['duplicates'])
+          action('install', ids=[sng_entries[0]['id']])
+          current = state()
+          sng_game = next(s for s in current['songs'] if s['name'] == 'SNG Song')
+          assert sng_game['path'].endswith('.sng')
+          action('remove_songs', ids=[sng_game['id']], confirm=True)
+          action('restore', ids=[state()['trash'][0]['id']])
+          assert any(s['name'] == 'SNG Song' for s in state()['songs'])
+          print('PASS: native SNG upload, archive duplicate review, selective installation, trash and restore in Docker')
           PY
       - name: Container diagnostics
         if: always()
