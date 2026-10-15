@@ -1,0 +1,21 @@
+[Unit]
+Description=CH Manager Pro web library
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as a dedicated user with write access to the song, archive, and watch folders.
+User=chmanager
+Group=chmanager
+WorkingDirectory=/opt/CH-Manager-Pro
+ExecStart=/usr/bin/python3 /opt/CH-Manager-Pro/ch_web.py --data-dir /var/lib/ch-manager-web
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
