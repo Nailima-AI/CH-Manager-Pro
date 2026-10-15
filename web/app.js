@@ -13,7 +13,7 @@ function busy(){return !!state?.jobs.some(j=>j.status==='queued'||j.status==='ru
 function render(){if(!state)return;$('metric-songs').textContent=state.songs.length.toLocaleString();$('metric-archived').textContent=state.archived.length.toLocaleString();$('metric-duplicates').textContent=state.duplicates.length;$('metric-monitor').textContent=state.config.monitoring?'Watching':'Paused';$('monitor-caption').textContent=state.config.auto_install?'Archive & install imports':'Archive imports only';$('nav-song-count').textContent=state.songs.length;$('nav-archive-count').textContent=state.archived.length;
  const jobs=state.jobs;const running=jobs.filter(j=>j.status==='queued'||j.status==='running');const last=jobs.at(-1);if(running.length)message(`${running.length} operation${running.length===1?'':'s'} in progress · ${running[0].action}`);else if(last)message(last.message,last.status==='error');
  const errors=state.errors||[];if(errors.length)message(`${errors.length} scan issue(s):\n${errors.join('\n')}`,true);else if(last?.status!=='error')message('',true);
- const simple=['settings','activity'].includes(activeTab);$('collection-panel').hidden=simple;$('settings-panel').hidden=activeTab!=='settings';$('activity-panel').hidden=activeTab!=='activity';$('installed-filter').hidden=activeTab!=='archived';$('organize-controls').hidden=!['songs','duplicates'].includes(activeTab);$('install-selected').hidden=activeTab!=='archived';$('restore-selected').hidden=activeTab!=='trash';$('remove-selected').hidden=activeTab==='trash';$('remove-selected').textContent=activeTab==='archived'?'Remove from game…':activeTab==='files'?'Archive files to Trash…':'Songs to Trash…';
+ const simple=['settings','activity','duplicates'].includes(activeTab);$('duplicates-panel').hidden=activeTab!=='duplicates';if(activeTab==='duplicates')renderDuplicates();$('collection-panel').hidden=simple;$('settings-panel').hidden=activeTab!=='settings';$('activity-panel').hidden=activeTab!=='activity';$('installed-filter').hidden=activeTab!=='archived';$('organize-controls').hidden=!['songs','duplicates'].includes(activeTab);$('install-selected').hidden=activeTab!=='archived';$('restore-selected').hidden=activeTab!=='trash';$('remove-selected').hidden=activeTab==='trash';$('remove-selected').textContent=activeTab==='archived'?'Remove from game…':activeTab==='files'?'Archive files to Trash…':'Songs to Trash…';
  if(activeTab==='settings'&&!settingsDirty)fillSettings();renderJobs();if(!simple)renderRows();for(const id of ['refresh','preview-moves','install-selected','remove-selected','restore-selected','review-apply'])$(id).disabled=busy();$('open-import').disabled=busy();}
 function renderRows(){const list=$('song-list');list.replaceChildren();const items=visibleRows();const valid=new Set(rows().map(s=>s.id));selected=new Set([...selected].filter(id=>valid.has(id)));$('visible-count').textContent=`${items.length.toLocaleString()} ${activeTab==='files'?'archives':activeTab==='trash'?'items':'songs'}`;$('select-all').checked=items.length>0&&items.every(s=>selected.has(s.id));
  if(!items.length){const e=node('div','empty');e.append(node('strong','',activeTab==='duplicates'?'No duplicate matches.':'Nothing here yet.'),node('span','',activeTab==='archived'?'Import archives or check your server archive folder in Settings.':'Try another search, import an archive, or refresh your collection.'));list.append(e);}
@@ -30,11 +30,11 @@ $('logout').addEventListener('click',guarded(async()=>{await request('/api/logou
 document.querySelectorAll('[data-tab]').forEach(e=>e.addEventListener('click',()=>switchTab(e.dataset.tab)));
 for(const id of ['search','sort','installed-filter'])$(id).addEventListener(id==='search'?'input':'change',()=>renderRows());
 $('select-all').addEventListener('change',()=>{for(const row of visibleRows()){if($('select-all').checked)selected.add(row.id);else selected.delete(row.id);}renderRows();});
-$('refresh').addEventListener('click',guarded(()=>action('refresh',{archives:activeTab==='archived'||activeTab==='files'})));
+$('refresh').addEventListener('click',guarded(()=>action('refresh',{archives:['archived','files','duplicates'].includes(activeTab)})));
 $('move-mode').addEventListener('change',()=>{$('custom-folder').hidden=$('move-mode').value!=='custom';});
-$('preview-moves').addEventListener('click',guarded(async()=>{if(!selected.size)throw Error('Select songs first');const plan=await request('/api/preview',{ids:[...selected],mode:$('move-mode').value,custom:$('custom-folder').value});if(!plan.moves.length)return message('Songs are already in those folders.');review(`Move ${plan.moves.length} song folders?`,'Review the complete plan. Collisions get a numbered suffix. Original archives remain unchanged.',plan.moves.map(m=>`${m.source}\n  → ${m.target}`).join('\n\n'),()=>action('apply_moves',{plan:plan.plan,confirm:true}));}));
+$('preview-moves').addEventListener('click',guarded(async()=>{if(!selected.size)throw Error('Select songs first');const plan=await request('/api/preview',{ids:[...selected],mode:$('move-mode').value,custom:$('custom-folder').value});if(!plan.moves.length)return message('Songs are already in those folders.');review(`Move ${plan.moves.length} songs?`,'Review the complete plan. Collisions get a numbered suffix. Original archives remain unchanged.',plan.moves.map(m=>`${m.source}\n  → ${m.target}`).join('\n\n'),()=>action('apply_moves',{plan:plan.plan,confirm:true}));}));
 $('install-selected').addEventListener('click',guarded(async()=>{if(!selected.size)throw Error('Select archived songs first');await action('install',{ids:[...selected]});selected.clear();}));
-$('remove-selected').addEventListener('click',guarded(async()=>{const items=selectedItems();if(!items.length)throw Error('Select items first');const paths=activeTab==='archived'?[...new Set(items.flatMap(i=>i.installed_paths))]:items.map(i=>i.path);if(!paths.length)throw Error('No matching installed copies selected');const name=activeTab==='archived'?'remove_archived':activeTab==='files'?'remove_archives':'remove_songs';const ids=items.map(i=>i.id);review(`Move ${paths.length} ${activeTab==='files'?'archives':'song folders'} to Trash?`,activeTab==='files'?'This removes original archive files from the archive folder. Installed game songs stay unchanged. You can restore these files from Trash.':'This removes selected game copies. Original downloaded archives stay available. You can restore removed folders from Trash.',paths.join('\n'),()=>action(name,{ids,confirm:true,expected_paths:paths}));}));
+$('remove-selected').addEventListener('click',guarded(async()=>{const items=selectedItems();if(!items.length)throw Error('Select items first');const paths=activeTab==='archived'?[...new Set(items.flatMap(i=>i.installed_paths))]:items.map(i=>i.path);if(!paths.length)throw Error('No matching installed copies selected');const name=activeTab==='archived'?'remove_archived':activeTab==='files'?'remove_archives':'remove_songs';const ids=items.map(i=>i.id);review(`Move ${paths.length} ${activeTab==='files'?'archives':'songs'} to Trash?`,activeTab==='files'?'This removes original archive files from the archive folder. Installed game songs stay unchanged. You can restore these files from Trash.':'This removes selected game copies. Original downloaded archives stay available. You can restore removed folders from Trash.',paths.join('\n'),()=>action(name,{ids,confirm:true,expected_paths:paths}));}));
 $('restore-selected').addEventListener('click',guarded(async()=>{if(!selected.size)throw Error('Select trash items first');await action('restore',{ids:[...selected]});selected.clear();}));
 $('review-apply').addEventListener('click',guarded(async()=>{if(busy())return;if(reviewAction){$('review-dialog').close();await reviewAction();selected.clear();}}));
 document.querySelectorAll('[data-close]').forEach(e=>e.addEventListener('click',()=>$(e.dataset.close).close()));
@@ -42,4 +42,48 @@ $('settings-form').addEventListener('input',()=>{settingsDirty=true;});
 $('settings-form').addEventListener('submit',guarded(async e=>{e.preventDefault();const form=e.target;const values={};for(const key of ['songs_dir','backup_dir','downloads_dir','organization'])values[key]=form.elements.namedItem(key).value;for(const key of ['monitoring','auto_install'])values[key]=form.elements.namedItem(key).checked;settingsDirty=false;await action('settings',values);}));
 $('open-import').addEventListener('click',()=>{$('install-on-import').checked=state.config.auto_install;$('upload-progress').textContent='';$('import-dialog').showModal();});
 $('import-form').addEventListener('submit',guarded(async e=>{e.preventDefault();const files=[...$('uploads').files];if(!files.length)throw Error('Choose archives first');importing=true;render();const button=e.target.querySelector('button[type=submit]');button.disabled=true;try{for(const [i,file]of files.entries()){$('upload-progress').textContent=`Uploading ${i+1}/${files.length}: ${file.name}`;const uploaded=await request('/api/upload?name='+encodeURIComponent(file.name),file,true);await action('import',{upload:uploaded.upload,install:$('install-on-import').checked});}$('import-dialog').close();$('uploads').value='';}catch(error){$('upload-progress').textContent=error.message;throw error;}finally{importing=false;button.disabled=false;render();}}));
+
+function renderDuplicates(){
+ const container=$('duplicate-groups');container.replaceChildren();
+ const query=$('duplicate-search').value.toLocaleLowerCase().trim();
+ const scope=$('duplicate-scope').value,kind=$('duplicate-kind').value;
+ const lookup=new Map((state.duplicate_items||[]).map(item=>[item.id,item]));
+ let count=0;
+ for(const group of state.duplicates){
+  const items=group.ids.map(id=>lookup.get(id)).filter(Boolean);
+  const installed=items.filter(i=>i.scope==='installed').length,archived=items.length-installed;
+  if(kind!=='all'&&group.category!==kind)continue;
+  if(scope==='installed'&&installed<2||scope==='archived'&&archived<2||scope==='cross'&&(!installed||!archived))continue;
+  if(query&&!items.some(i=>[i.name,i.artist,i.author,i.game,i.path,i.archive,i.archive_path].filter(Boolean).join(' ').toLocaleLowerCase().includes(query)))continue;
+  count++;
+  const card=node('article','duplicate-group');
+  card.append(node('span','badge duplicate',group.kind),node('h3','',items[0]?.name||'Song comparison'),node('p','caption',`${installed} game copies · ${archived} archived songs`));
+  for(const item of items){
+   const entry=node('div','duplicate-entry'),info=node('div','duplicate-info');
+   info.append(node('strong','',item.name),node('div','song-artist',`${item.artist} · Charter: ${item.author}`),node('div','song-detail',`${item.game} · ${item.game_evidence}`));
+   const location=item.scope==='installed'?item.path:`${item.archive} / ${item.archive_path}`;
+   info.append(node('span',`badge ${item.scope==='archived'?'off':''}`,`${item.scope==='installed'?'In game':'Archived'} · ${item.format}`),node('div','path',location));
+   info.append(node('div','fingerprint',`Chart SHA-256: ${item.chart_hash||'Unavailable'}`),node('div','fingerprint',`Content SHA-256: ${item.content_hash||'Unavailable'}`));
+   const controls=node('div','duplicate-actions');
+   if(item.scope==='installed'){
+    const remove=node('button','danger','Move game copy to Trash…');remove.disabled=busy();
+    remove.addEventListener('click',guarded(()=>review('Remove this game copy?','Only this game song is moved to recoverable app Trash. Other versions and all original archives stay available.',location,()=>action('remove_songs',{ids:[item.id],confirm:true}))));controls.append(remove);
+   }else{
+    const install=node('button','primary',item.installed?'Already installed':'Install this version');install.disabled=busy()||!!item.installed;
+    install.addEventListener('click',guarded(()=>action('install',{ids:[item.id]})));controls.append(install);
+    const archive=node('button','danger','Review source archive…');archive.disabled=busy();
+    archive.addEventListener('click',guarded(()=>{
+     const related=state.archived.filter(e=>e.archive===item.archive);
+     review('Move the entire source archive to Trash?',`This affects all ${related.length} songs inside this source file, not just the selected duplicate. Installed game copies stay unchanged. Restore the original file from Trash if needed.`,item.archive+'\n\n'+related.map(e=>e.name+' — '+e.artist).join('\n'),()=>action('remove_archives',{ids:[item.archive_id],confirm:true}));
+    }));controls.append(archive);
+   }
+   entry.append(info,controls);card.append(entry);
+  }
+  container.append(card);
+ }
+ $('duplicate-count').textContent=`${count} matching groups · A song can appear in more than one comparison.`;
+ if(!count){const empty=node('div','empty');empty.append(node('strong','','No duplicate groups match.'),node('span','','Try another filter or refresh to rescan game songs and archives.'));container.append(empty);}
+}
+for(const id of ['duplicate-search','duplicate-scope','duplicate-kind'])$(id).addEventListener(id==='duplicate-search'?'input':'change',()=>{if(state)renderDuplicates();});
+
 loadState();setInterval(()=>{if(state&&!document.hidden)loadState();},2500);
