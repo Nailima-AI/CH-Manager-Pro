@@ -257,7 +257,7 @@ class MainWindow(Adw.ApplicationWindow):
         attempted = {}
         while self.app.monitoring and generation == self.monitor_generation:
             try:
-                files = [f for f in os.listdir(SYSTEM_DL_DIR) if f.lower().endswith(('.zip', '.rar', '.7z'))]
+                files = [f for f in os.listdir(SYSTEM_DL_DIR) if f.lower().endswith(('.zip', '.rar', '.7z', '.sng'))]
                 for f in files:
                     if not self.app.monitoring or generation != self.monitor_generation: break
                     fp = os.path.join(SYSTEM_DL_DIR, f)
@@ -324,7 +324,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.app.save_config()
 
     def on_open_backup(self, _): subprocess.Popen(["xdg-open", self.app.backup_dir])
-    def on_import_clicked(self, _): d = Gtk.FileDialog(title=tr("btn_import")); f = Gtk.FileFilter(); f.set_name("Archivi"); f.add_pattern("*.zip"); f.add_pattern("*.rar"); f.add_pattern("*.7z"); d.set_default_filter(f); d.open_multiple(self, None, self.on_files_selected)
+    def on_import_clicked(self, _): d = Gtk.FileDialog(title=tr("btn_import")); f = Gtk.FileFilter(); f.set_name("Archivi"); f.add_pattern("*.zip"); f.add_pattern("*.rar"); f.add_pattern("*.7z"); f.add_pattern("*.sng"); d.set_default_filter(f); d.open_multiple(self, None, self.on_files_selected)
     def on_files_selected(self, dialog, result):
         try:
             files = dialog.open_multiple_finish(result)
@@ -385,7 +385,7 @@ class MainWindow(Adw.ApplicationWindow):
                         else: os.remove(fp)
                         rem.append(c); count += 1
                         if delete_backup_also:
-                            for ext in ['.zip', '.rar', '.7z']:
+                            for ext in ['.zip', '.rar', '.7z', '.sng']:
                                 ap = os.path.join(self.app.backup_dir, c.item_name + ext);
                                 if os.path.exists(ap): os.remove(ap)
                     except: pass
