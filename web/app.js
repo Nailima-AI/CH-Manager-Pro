@@ -1,33 +1,70 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let state=null, csrf='', activeTab='songs', selected=new Set(), reviewAction=null, settingsDirty=false, importing=false;
+const mobileView=window.matchMedia('(max-width: 760px)'), expandedDetails=new Set();
 const tabs={songs:['Game library','The songs ready for your next session.'],archived:['Archived songs','Choose what’s in the game. Keep the rest in your archive.'],duplicates:['Duplicate review','Compare chart matches before deciding what to keep.'],files:['Archive files','Original downloads, kept for whenever you need them.'],trash:['Trash & restore','Recover songs and archives removed through this server.'],settings:['Server settings','Your folders, your workflow.'],activity:['Activity','Imports, scans, and changes to your collection.']};
 function node(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;}
 function message(text,error=false){const e=$(error?'error-box':'notice');e.textContent=text;e.hidden=!text;}
 async function request(path,body,raw=false){const options=body===undefined?{}:{method:'POST',headers:{'X-CSRF-Token':csrf,...(raw?{}:{'Content-Type':'application/json'})},body:raw?body:JSON.stringify(body)};const response=await fetch(path,options);const result=await response.json();if(response.status===401&&path!=='/api/login'){showLogin();throw Error('Session expired. Sign in again.');}if(!response.ok)throw Error(result.error||'Request failed');return result;}
 function showLogin(){$('workspace').hidden=true;$('login').hidden=false;csrf='';state=null;}
-async function loadState(){try{const next=await request('/api/state');state=next;csrf=next.csrf;$('login').hidden=true;$('workspace').hidden=false;$('version').textContent=next.version;render();}catch(e){if(state)message(e.message,true);}}
+async function loadState(){try{const next=await request('/api/state');const firstLoad=!state;state=next;csrf=next.csrf;$('login').hidden=true;$('workspace').hidden=false;$('version').textContent=next.version;if(firstLoad)switchTab(tabs[location.hash.slice(1)]?location.hash.slice(1):'songs',false);else render();}catch(e){if(state)message(e.message,true);}}
 function rows(){if(!state)return[];if(activeTab==='archived')return state.archived;if(activeTab==='files')return state.archives;if(activeTab==='trash')return state.trash;if(activeTab==='duplicates'){const ids=new Set(state.duplicates.flatMap(g=>g.ids));return state.songs.filter(s=>ids.has(s.id));}return state.songs;}
 function visibleRows(){const q=$('search').value.toLocaleLowerCase().trim();const filter=$('installed-filter').value;const sort=$('sort').value;return rows().filter(r=>(!q||[r.name,r.artist,r.author,r.game,r.path,r.archive,r.original].filter(Boolean).join(' ').toLocaleLowerCase().includes(q))&&(activeTab!=='archived'||filter==='all'||(filter==='installed'?r.installed>0:!r.installed))).sort((a,b)=>String(a[sort]||a.path||a.original||'').localeCompare(String(b[sort]||b.path||b.original||'')));}
 function busy(){return !!state?.jobs.some(j=>j.status==='queued'||j.status==='running')||importing;}
-function render(){if(!state)return;$('metric-songs').textContent=state.songs.length.toLocaleString();$('metric-archived').textContent=state.archived.length.toLocaleString();$('metric-duplicates').textContent=state.duplicates.length;$('metric-monitor').textContent=state.config.monitoring?'Watching':'Paused';$('monitor-caption').textContent=state.config.auto_install?'Archive & install imports':'Archive imports only';$('nav-song-count').textContent=state.songs.length;$('nav-archive-count').textContent=state.archived.length;
+function render(){if(!state)return;$('metric-songs').textContent=state.songs.length.toLocaleString();$('metric-archived').textContent=state.archived.length.toLocaleString();$('metric-duplicates').textContent=state.duplicates.length;$('metric-monitor').textContent=state.config.monitoring?'Watching':'Paused';$('monitor-caption').textContent=state.config.auto_install?'Archive & install imports':'Archive imports only';$('nav-song-count').textContent=state.songs.length;$('nav-archive-count').textContent=state.archived.length;$('mobile-summary').textContent=`${state.songs.length} in game · ${state.archived.length} archived`;
  const jobs=state.jobs;const running=jobs.filter(j=>j.status==='queued'||j.status==='running');const last=jobs.at(-1);if(running.length)message(`${running.length} operation${running.length===1?'':'s'} in progress · ${running[0].action}`);else if(last)message(last.message,last.status==='error');
  const errors=state.errors||[];if(errors.length)message(`${errors.length} scan issue(s):\n${errors.join('\n')}`,true);else if(last?.status!=='error')message('',true);
  const simple=['settings','activity','duplicates'].includes(activeTab);$('duplicates-panel').hidden=activeTab!=='duplicates';if(activeTab==='duplicates')renderDuplicates();$('collection-panel').hidden=simple;$('settings-panel').hidden=activeTab!=='settings';$('activity-panel').hidden=activeTab!=='activity';$('installed-filter').hidden=activeTab!=='archived';$('organize-controls').hidden=!['songs','duplicates'].includes(activeTab);$('install-selected').hidden=activeTab!=='archived';$('restore-selected').hidden=activeTab!=='trash';$('remove-selected').hidden=activeTab==='trash';$('remove-selected').textContent=activeTab==='archived'?'Remove from game…':activeTab==='files'?'Archive files to Trash…':'Songs to Trash…';
  if(activeTab==='settings'&&!settingsDirty)fillSettings();renderJobs();if(!simple)renderRows();for(const id of ['refresh','preview-moves','install-selected','remove-selected','restore-selected','review-apply'])$(id).disabled=busy();$('open-import').disabled=busy();}
 function renderRows(){const list=$('song-list');list.replaceChildren();const items=visibleRows();const valid=new Set(rows().map(s=>s.id));selected=new Set([...selected].filter(id=>valid.has(id)));$('visible-count').textContent=`${items.length.toLocaleString()} ${activeTab==='files'?'archives':activeTab==='trash'?'items':'songs'}`;$('select-all').checked=items.length>0&&items.every(s=>selected.has(s.id));
  if(!items.length){const e=node('div','empty');e.append(node('strong','',activeTab==='duplicates'?'No duplicate matches.':'Nothing here yet.'),node('span','',activeTab==='archived'?'Import archives or check your server archive folder in Settings.':'Try another search, import an archive, or refresh your collection.'));list.append(e);}
- for(const item of items){const row=node('div','song-row');const check=node('input');check.type='checkbox';check.checked=selected.has(item.id);check.setAttribute('aria-label',`Select ${item.name||item.path||item.original}`);check.addEventListener('change',()=>{if(check.checked)selected.add(item.id);else selected.delete(item.id);$('selected-count').textContent=`${selected.size} selected`;});row.append(check,node('div','art',activeTab==='files'?'▤':activeTab==='trash'?'↺':'♫'));const title=node('div');title.append(node('div','song-title',item.name||item.path||item.original),node('div','song-artist',item.artist|| (activeTab==='files'?`${(item.bytes/1048576).toFixed(1)} MiB`:new Date(item.removed*1000).toLocaleString())));row.append(title);const detail=node('div','song-detail');if(item.author){detail.append(node('strong','',item.author),node('div','',item.author_evidence||'Chart author'),node('div','',item.game||'Unknown source'),node('div','',item.game_evidence||''));}else detail.append(node('div','',activeTab==='trash'?'Original server path':'Original archive download'));row.append(detail);const end=node('div','row-end');if(activeTab==='archived'){end.append(node('span',`badge ${item.installed?'':'off'}`,item.installed?`In game · ${item.installed} copies`:'Archived only'),node('div','path',`${item.archive} / ${item.archive_path}`));if(item.installed_paths.length)end.append(node('div','path',item.installed_paths.join(' · ')));}else if(activeTab==='duplicates'){const groups=state.duplicates.map((g,i)=>g.ids.includes(item.id)?`Group ${i+1}: ${g.kind}`:null).filter(Boolean);for(const group of groups)end.append(node('span','badge duplicate',group));end.append(node('div','path',item.path));}else end.append(node('span','badge',activeTab==='files'?'Archive':activeTab==='trash'?'Recoverable':'In game'),node('div','path',item.path||item.original));if(item.warnings?.length)end.append(node('div','path',item.warnings.join('; ')));row.append(end);list.append(row);}$('selected-count').textContent=`${selected.size} selected`;}
+ for(const item of items){const row=node('div','song-row');const check=node('input');check.type='checkbox';check.checked=selected.has(item.id);check.setAttribute('aria-label',`Select ${item.name||item.path||item.original}`);check.addEventListener('change',()=>{if(check.checked)selected.add(item.id);else selected.delete(item.id);updateSelectionUI();});const selectLabel=node('label','song-select');selectLabel.append(check);row.append(selectLabel,node('div','art',activeTab==='files'?'▤':activeTab==='trash'?'↺':'♫'));const title=node('div','song-main');title.append(node('div','song-title',item.name||item.path||item.original),node('div','song-artist',item.artist|| (activeTab==='files'?`${(item.bytes/1048576).toFixed(1)} MiB`:new Date(item.removed*1000).toLocaleString())));row.append(title);const detail=node('div','song-detail');if(item.author){detail.append(node('strong','',item.author),node('div','',item.author_evidence||'Chart author'),node('div','',item.game||'Unknown source'),node('div','',item.game_evidence||''));}else detail.append(node('div','',activeTab==='trash'?'Original server path':'Original archive download'));const end=node('div','row-end');if(activeTab==='archived'){end.append(node('span',`badge ${item.installed?'':'off'}`,item.installed?`In game · ${item.installed} copies`:'Archived only'),node('div','path',`${item.archive} / ${item.archive_path}`));if(item.installed_paths.length)end.append(node('div','path',item.installed_paths.join(' · ')));}else if(activeTab==='duplicates'){const groups=state.duplicates.map((g,i)=>g.ids.includes(item.id)?`Group ${i+1}: ${g.kind}`:null).filter(Boolean);for(const group of groups)end.append(node('span','badge duplicate',group));end.append(node('div','path',item.path));}else end.append(node('span','badge',activeTab==='files'?'Archive':activeTab==='trash'?'Recoverable':'In game'),node('div','path',item.path||item.original));if(item.warnings?.length)end.append(node('div','path',item.warnings.join('; ')));const extra=disclosure(item.id,'Chart & location');extra.classList.add('song-extra');extra.append(detail,end);row.append(extra);list.append(row);}updateSelectionUI();}
 function renderJobs(){const list=$('job-list');list.replaceChildren();for(const job of [...state.jobs].reverse()){const item=node('div','job');item.append(node('span',`badge ${job.status==='error'?'duplicate':''}`,job.status),node('strong','',` ${job.action}`),node('small','',job.message));list.append(item);}if(!state.jobs.length)list.append(node('p','muted','No operations yet.'));}
 function fillSettings(){const form=$('settings-form');for(const [key,value]of Object.entries(state.config)){const input=form.elements.namedItem(key);if(!input)continue;if(input.type==='checkbox')input.checked=value;else input.value=value;}}
-function switchTab(tab){activeTab=tab;selected.clear();$('search').value='';$('page-title').textContent=tabs[tab][0];$('page-description').textContent=tabs[tab][1];document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===tab));render();}
+function updateSelectionUI(){
+ $('selected-count').textContent=`${selected.size} selected`;
+ document.body.classList.toggle('has-selection',selected.size>0&&['songs','archived','files','trash'].includes(activeTab));
+ updateSelectionHeight();
+}
+function updateSelectionHeight(){
+ const height=document.body.classList.contains('has-selection')?$('bulk-actions').getBoundingClientRect().height:0;
+ document.documentElement.style.setProperty('--selection-height',`${Math.ceil(height)}px`);
+}
+function disclosure(key,label){
+ const details=node('details','row-disclosure');details.append(node('summary','',label));
+ details.open=!mobileView.matches||expandedDetails.has(key);
+ details.addEventListener('toggle',()=>{if(mobileView.matches){if(details.open)expandedDetails.add(key);else expandedDetails.delete(key);}});
+ return details;
+}
+function switchTab(tab,moveFocus=true){
+ if(!tabs[tab])return;
+ activeTab=tab;selected.clear();$('search').value='';$('page-title').textContent=tabs[tab][0];$('page-description').textContent=tabs[tab][1];
+ document.querySelectorAll('[data-tab]').forEach(e=>{const current=e.dataset.tab===tab;e.classList.toggle('active',current);if(current)e.setAttribute('aria-current','page');else e.removeAttribute('aria-current');});
+ $('open-more').classList.toggle('active',['files','trash','settings','activity'].includes(tab));
+ if($('more-dialog').open)$('more-dialog').close();
+ render();updateSelectionUI();
+ if(moveFocus){window.scrollTo({top:0,behavior:'auto'});$('page-title').focus({preventScroll:true});}
+}
+function navigateTab(tab){if(location.hash.slice(1)!==tab)location.hash=tab;else switchTab(tab);}
+window.addEventListener('hashchange',()=>{if(state)switchTab(tabs[location.hash.slice(1)]?location.hash.slice(1):'songs');});
+$('open-more').addEventListener('click',()=>{$('more-dialog').showModal();$('open-more').setAttribute('aria-expanded','true');});
+$('more-dialog').addEventListener('close',()=>{$('open-more').setAttribute('aria-expanded','false');});
+$('mobile-logout').addEventListener('click',()=>{$('more-dialog').close();$('logout').click();});
+function resizeLayout(){
+ $('overview').open=!mobileView.matches;
+ if($('more-dialog').open)$('more-dialog').close();
+ if(state)render();updateSelectionHeight();
+}
+mobileView.addEventListener('change',resizeLayout);resizeLayout();
+new ResizeObserver(updateSelectionHeight).observe($('bulk-actions'));
+
 async function action(name,payload={}){const result=await request('/api/action',{action:name,...payload});message('Operation queued. Follow progress in Activity.');await loadState();return result;}
 function review(title,description,details,callback){$('review-title').textContent=title;$('review-description').textContent=description;$('review-details').textContent=details;reviewAction=callback;$('review-dialog').showModal();}
 function selectedItems(){return rows().filter(r=>selected.has(r.id));}
 function guarded(fn){return async e=>{try{await fn(e);}catch(error){message(error.message,true);}};}
 $('login-form').addEventListener('submit',async e=>{e.preventDefault();try{await request('/api/login',{token:$('token').value});$('token').value='';$('login-error').textContent='';await loadState();}catch(error){$('login-error').textContent=error.message;}});
 $('logout').addEventListener('click',guarded(async()=>{await request('/api/logout',{});showLogin();}));
-document.querySelectorAll('[data-tab]').forEach(e=>e.addEventListener('click',()=>switchTab(e.dataset.tab)));
+document.querySelectorAll('[data-tab]').forEach(e=>e.addEventListener('click',()=>navigateTab(e.dataset.tab)));
 for(const id of ['search','sort','installed-filter'])$(id).addEventListener(id==='search'?'input':'change',()=>renderRows());
 $('select-all').addEventListener('change',()=>{for(const row of visibleRows()){if($('select-all').checked)selected.add(row.id);else selected.delete(row.id);}renderRows();});
 $('refresh').addEventListener('click',guarded(()=>action('refresh',{archives:['archived','files','duplicates'].includes(activeTab)})));
@@ -63,7 +100,7 @@ function renderDuplicates(){
    info.append(node('strong','',item.name),node('div','song-artist',`${item.artist} · Charter: ${item.author}`),node('div','song-detail',`${item.game} · ${item.game_evidence}`));
    const location=item.scope==='installed'?item.path:`${item.archive} / ${item.archive_path}`;
    info.append(node('span',`badge ${item.scope==='archived'?'off':''}`,`${item.scope==='installed'?'In game':'Archived'} · ${item.format}`),node('div','path',location));
-   info.append(node('div','fingerprint',`Chart SHA-256: ${item.chart_hash||'Unavailable'}`),node('div','fingerprint',`Content SHA-256: ${item.content_hash||'Unavailable'}`));
+   const hashes=disclosure(`hashes:${group.id}:${item.id}`,'Compare hashes');hashes.classList.add('hash-disclosure');hashes.append(node('div','fingerprint',`Chart SHA-256: ${item.chart_hash||'Unavailable'}`),node('div','fingerprint',`Content SHA-256: ${item.content_hash||'Unavailable'}`));info.append(hashes);
    const controls=node('div','duplicate-actions');
    if(item.scope==='installed'){
     const remove=node('button','danger','Move game copy to Trash…');remove.disabled=busy();
