@@ -142,6 +142,30 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.http(server,'POST','/api/logout',{},auth)[0],200)
         self.assertEqual(self.http(server,'GET','/api/state',headers=auth)[0],401)
 
+    def test_http_sng_upload_review_and_selective_removal(self):
+        from test_sng import sng_bytes
+        server=self.start_http(); auth=self.login(server)
+        def call(action, **payload):
+            code,_,body=self.http(server,'POST','/api/action',dict(action=action,**payload),auth)
+            self.assertEqual(code,202)
+            job=json.loads(body)['job']; until=time.monotonic()+3
+            while self.service.jobs[job]['status'] in ('queued','running') and time.monotonic()<until: time.sleep(.01)
+            self.assertEqual(self.service.jobs[job]['status'],'done',self.service.jobs[job])
+        for name in ('One.sng','Two.sng'):
+            code,_,body=self.http(server,'POST','/api/upload?name='+name,sng_bytes(),auth)
+            self.assertEqual(code,201)
+            call('import',upload=json.loads(body)['upload'],install=False)
+        code,_,body=self.http(server,'GET','/api/state',headers=auth)
+        current=json.loads(body)
+        self.assertEqual(code,200);self.assertEqual(current['duplicates'][0]['category'],'exact')
+        self.assertEqual({i['scope'] for i in current['duplicate_items']},{'archived'})
+        call('install',ids=[current['archived'][0]['id']])
+        current=self.service.public_state();active=next(e for e in current['archived'] if e['installed'])
+        call('remove_archived',ids=[active['id']],confirm=True,expected_paths=active['installed_paths'])
+        self.assertFalse(self.service.public_state()['songs'])
+        self.assertEqual(len(self.service.public_state()['archives']),2)
+        self.assertEqual(self.http(server,'GET','/',headers=auth)[0],200)
+
     def test_http_upload_and_import(self):
         server=self.start_http(); auth=self.login(server)
         source=self.upload_fixture('Original.zip'); data=source.read_bytes(); source.unlink()
