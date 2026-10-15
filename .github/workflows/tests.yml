@@ -18,3 +18,126 @@ jobs:
           /usr/bin/python3 -m py_compile ch_manager_pro.py library_core.py ch_web.py
       - name: Backend and real GTK integration tests
         run: dbus-run-session -- xvfb-run -a /usr/bin/python3 -m unittest discover -s tests -v
+  docker-compose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build image
+        run: docker compose build --pull
+      - name: Start Compose service
+        run: docker compose up -d
+      - name: Test container and persistent library workflow
+        run: |
+          python3 - <<'PY'
+          import io
+          import json
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+
+          base = 'http://127.0.0.1:8899'
+          auth = {}
+
+          def compose(*args):
+              return subprocess.check_output(['docker', 'compose', *args], text=True).strip()
+
+          def request(path, payload=None, raw=None, expected=200, headers=None):
+              data = raw if raw is not None else (json.dumps(payload).encode() if payload is not None else None)
+              req = urllib.request.Request(base + path, data=data, headers={**auth, **(headers or {})})
+              if payload is not None:
+                  req.add_header('Content-Type', 'application/json')
+              try:
+                  response = urllib.request.urlopen(req, timeout=10)
+              except urllib.error.HTTPError as exc:
+                  response = exc
+              with response:
+                  body = response.read()
+                  assert response.status == expected, (path, response.status, body[:200])
+                  return response.headers, body
+
+          def ready():
+              for attempt in range(60):
+                  try:
+                      _, body = request('/')
+                      assert b'Archived songs' in body
+                      return
+                  except (OSError, AssertionError):
+                      time.sleep(1)
+              raise AssertionError('Container did not become ready')
+
+          def state():
+              return json.loads(request('/api/state')[1])
+
+          def login(token):
+              auth.clear()
+              headers, _ = request('/api/login', {'token': token})
+              auth['Cookie'] = headers['Set-Cookie'].split(';')[0]
+              auth['X-CSRF-Token'] = state()['csrf']
+
+          def action(name, **payload):
+              job_id = json.loads(request('/api/action', {'action': name, **payload}, expected=202)[1])['job']
+              for attempt in range(100):
+                  job = next(j for j in state()['jobs'] if j['id'] == job_id)
+                  if job['status'] in ('done', 'error'):
+                      assert job['status'] == 'done', job
+                      return
+                  time.sleep(.1)
+              raise AssertionError('Job timed out: ' + name)
+
+          ready()
+          assert compose('exec', '-T', 'ch-manager', 'id', '-u') == '1000'
+          compose('exec', '-T', 'ch-manager', '7z', 'i')
+          for path in ('/app.js', '/style.css'):
+              assert request(path)[1]
+          request('/api/state', expected=401)
+          token = compose('exec', '-T', 'ch-manager', 'cat', '/data/access-token')
+          assert len(token) >= 24
+          login(token)
+          action('settings', organization='author', auto_install=False)
+          archive_data = io.BytesIO()
+          with zipfile.ZipFile(archive_data, 'w') as archive:
+              for name in ('One', 'Two'):
+                  archive.writestr(f'{name}/song.ini', f'[song]\nname={name}\nartist=Band\ncharter=Author\nicon=gh3')
+                  archive.writestr(f'{name}/notes.mid', b'chart-' + name.encode())
+                  archive.writestr(f'{name}/song.ogg', b'audio')
+          upload = json.loads(request('/api/upload?name=Smoke.zip', raw=archive_data.getvalue(), expected=201)[1])['upload']
+          action('import', upload=upload, install=False)
+          current = state()
+          assert len(current['archived']) == 2 and not current['songs']
+          assert len(current['archives']) == 1
+          selected = current['archived'][0]['id']
+          action('install', ids=[selected])
+          current = state()
+          assert len(current['songs']) == 1
+          active = next(e for e in current['archived'] if e['installed'])
+          action('remove_archived', ids=[active['id']], confirm=True, expected_paths=active['installed_paths'])
+          current = state()
+          assert not current['songs'] and len(current['trash']) == 1
+          action('restore', ids=[current['trash'][0]['id']])
+          assert len(state()['songs']) == 1
+          print('PASS: image starts as UID 1000; 7z, frontend, authentication, upload, archive, selective install, removal and restore')
+          # Recreate the container to check the named volume, not just its writable layer.
+          compose('up', '-d', '--force-recreate')
+          ready()
+          assert compose('exec', '-T', 'ch-manager', 'cat', '/data/access-token') == token
+          login(token)
+          action('refresh')
+          current = state()
+          assert len(current['songs']) == 1 and len(current['archived']) == 2
+          assert current['config']['organization'] == 'author' and not current['config']['auto_install']
+          assert not current['errors'], current['errors']
+          print('PASS: container recreation preserves token, settings, archive catalog and installed song')
+          PY
+      - name: Container diagnostics
+        if: always()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color
+      - name: Clean up disposable CI containers and volume
+        if: always()
+        run: docker compose down --volumes --remove-orphans
