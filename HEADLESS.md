@@ -57,6 +57,14 @@ Uploaded originals wait in the data directory's `incoming/` folder until importe
 
 Full-content installed-state checks include audio and metadata and can take time on large collections. Edited installed songs may appear not installed and will not be removed as exact archive matches. Native `.sng` files are supported as described below. Game folders directly at the library root, nested songs-inside-songs, and symlinks require manual review, as in the desktop version.
 
+## Phone navigation
+
+On screens up to 760 px wide, use the fixed **Library / Archive / Duplicates / More** navigation at the bottom. More opens archive files, Trash, server settings, Activity, and Sign out. Switching pages closes the menu and returns to the page heading; browser Back/Forward restores the selected page. Desktop screens keep the sidebar.
+
+Collection totals collapse into a summary on phones. Expand **Chart & location** on a song or **Compare hashes** in duplicate review for details; expanded rows remain open across background refreshes. Selecting songs shows the action bar above the bottom navigation. Controls have larger touch targets, inputs avoid automatic iPhone zoom, and the layout allows space for device safe areas and confirmation dialogs.
+
+The test-only Playwright check exercises small phones, larger phones, tablets, landscape and desktop widths against a temporary HTTP server. It checks navigation, history, sign-out, dialogs, expanded details, selection actions, and horizontal overflow. Browser dependencies are not needed to run the app.
+
 ## SNG songs and duplicate review
 
 SNGPKG **version 1** files can be uploaded, monitored, archived, browsed, installed, organized, removed, and restored. Native `.sng` files stay packed and retain their bytes when installed or moved. SNG files inside ZIP/RAR/7z packs are recognized as individual songs. No converter or extra dependency is required. Metadata and chart hashes are read without extracting audio; full-content comparison streams decoded payloads in bounded chunks. The reader follows the [public SNG specification](https://github.com/mdsitton/SngFileFormat), rejects unsupported versions, truncated/overlapping offsets, unsafe paths, conflicting members, and malformed metadata. Root chart files above 32 MiB are rejected with a scan error. Actual Clone Hero playback remains untested here.
