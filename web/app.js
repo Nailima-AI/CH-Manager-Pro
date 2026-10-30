@@ -7,7 +7,7 @@ function node(tag,cls,text){const e=document.createElement(tag);if(cls)e.classNa
 function message(text,error=false){const e=$(error?'error-box':'notice');e.textContent=text;e.hidden=!text;}
 async function request(path,body,raw=false){const options=body===undefined?{}:{method:'POST',headers:{'X-CSRF-Token':csrf,...(raw?{}:{'Content-Type':'application/json'})},body:raw?body:JSON.stringify(body)};const response=await fetch(path,options);const result=await response.json();if(response.status===401&&path!=='/api/login'){showLogin();throw Error('Session expired. Sign in again.');}if(!response.ok)throw Error(result.error||'Request failed');return result;}
 function showLogin(){
- sessionEpoch++;state=null;csrf='';selected.clear();settingsSaveJob=null;
+ sessionEpoch++;state=null;csrf='';selected.clear();settingsSaveJob=null;settingsDirty=false;
  document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
  document.body.classList.remove('has-selection');updateSelectionHeight();
  $('workspace').hidden=true;$('login').hidden=false;

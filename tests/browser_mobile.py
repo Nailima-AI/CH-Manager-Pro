@@ -109,6 +109,11 @@ def run():
                         page.locator('#open-more').click();page.locator('#mobile-logout').click()
                     else: page.locator('#logout').click()
                     expect(page.locator('#login')).to_be_visible()
+                    # Failed settings drafts belong to the signed-out session.
+                    page.locator('#token').fill(token);page.get_by_role('button',name='Open library →').click()
+                    expect(page.locator('#workspace')).to_be_visible()
+                    navigate('settings')
+                    expect(page.locator('[name=songs_dir]')).to_have_value(service.config['songs_dir'])
                     assert not errors,errors
                     print(f'PASS: {width}x{height}: login, navigation/history, all pages, dialogs, overflow and sign-out')
                     context.close()
