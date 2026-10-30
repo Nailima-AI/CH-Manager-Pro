@@ -438,9 +438,23 @@ def extract_archive(source, destination):
 
 
 def copy_song(source, target):
-    if Path(source).is_dir(): return shutil.copytree(source, target)
-    with Path(source).open('rb') as stream, Path(target).open('xb') as output:
-        shutil.copyfileobj(stream, output)
+    """Copy into an exclusively reserved destination; clean up only our own copy."""
+    source, target = Path(source), Path(target)
+    if source.is_dir():
+        target.mkdir()  # A concurrent destination belongs to somebody else.
+        try:
+            shutil.copytree(source, target, dirs_exist_ok=True)
+        except Exception:
+            shutil.rmtree(target)
+            raise
+    else:
+        output = target.open('xb')  # Failure here must never trigger cleanup.
+        try:
+            with output, source.open('rb') as stream:
+                shutil.copyfileobj(stream, output)
+        except Exception:
+            target.unlink()
+            raise
     return target
 
 
@@ -473,12 +487,7 @@ def install_archive(source, root, mode='none'):
                 name = Path(source).stem if song.path == sandbox else song.path.name
                 target = unique_path(parent / component(name))
                 # copytree refuses collisions and leaves the archive available on failure.
-                try:
-                    copy_song(song.path, target)
-                except Exception:
-                    if target.exists():
-                        remove_song(target)
-                    raise
+                copy_song(song.path, target)
                 installed.append(target)
         except Exception:
             for target in installed:
@@ -530,6 +539,7 @@ class ArchiveCatalog:
         self.temporary = tempfile.TemporaryDirectory(prefix='ch-archive-library-')
         self.entries = []
         self.errors = []
+        self.sandbox_count = 0
 
     def close(self):
         self.temporary.cleanup()
@@ -547,7 +557,8 @@ class ArchiveCatalog:
                         self.entries.append(ArchivedSong(archive, '.', song, song_content_hash(archive)))
                     except (OSError, ValueError) as exc: self.errors.append(f'{archive.name}: {exc}')
                     continue
-                sandbox = Path(self.temporary.name) / str(len(list(Path(self.temporary.name).iterdir())))
+                sandbox = Path(self.temporary.name) / str(self.sandbox_count)
+                self.sandbox_count += 1
                 sandbox.mkdir()
                 try:
                     extract_archive(archive, sandbox)
@@ -566,14 +577,18 @@ class ArchiveCatalog:
         return self.entries, self.errors
 
 
-def archived_installations(entries, game_root, content_hashes=None):
-    songs, errors = scan_library(game_root)
+def archived_installations(entries, game_root, content_hashes=None, songs=None):
+    if songs is None:
+        songs, errors = scan_library(game_root)
+    else:
+        errors = []
+    root = Path(game_root).expanduser().resolve(strict=True)
     relevant_charts = {entry.song.chart_hash for entry in entries}
     copies = defaultdict(list)
     for song in songs:
         if song.chart_hash not in relevant_charts: continue
         try:
-            validate_source(song.path, Path(game_root).expanduser().resolve(strict=True))
+            validate_source(song.path, root)
             fingerprint = song_content_hash(song.path)
             if content_hashes is not None: content_hashes[song.path] = fingerprint
             copies[fingerprint].append(song.path)
@@ -600,11 +615,7 @@ def activate_archived(entries, game_root, mode='none'):
             name = entry.song.path.name if entry.relative_path != '.' or entry.song.path.is_file() else re.sub(r'\.(zip|rar|7z|sng)(?: \(\d+\))?$', '', entry.archive.name, flags=re.I)
             if entry.song.path.is_file(): name = re.sub(r'(?i)\.sng(?: \(\d+\))?$', '', name) + '.sng'
             target = unique_path(parent / component(name))
-            try:
-                copy_song(entry.song.path, target)
-            except Exception:
-                if target.exists(): remove_song(target)
-                raise
+            copy_song(entry.song.path, target)
             installed.append(target)
             copies.setdefault(entry.content_hash, []).append(target)
     except Exception:

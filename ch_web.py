@@ -19,7 +19,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from library_core import (ArchiveCatalog, activate_archived, archive_format,
-    archived_installations, apply_moves, deactivate_archived, duplicate_groups,
+    archived_installations, apply_moves, deactivate_archived,
     install_archive, plan_moves, scan_library, unique_path, validate_source, inside,
     song_content_hash, normalized, UNKNOWN)
 
@@ -88,6 +88,7 @@ class Service:
         self.upload_lock = threading.Lock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='ch-library')
         self.jobs = {}
+        self.revision = 0
         self.stop = threading.Event()
         self.watch_thread = None
         self.closed = False
@@ -129,9 +130,12 @@ class Service:
         if self.catalog: self.catalog.close()
         self.closed = True
 
-    def public_state(self):
+    def public_state(self, since=None):
         with self.lock:
-            return copy.deepcopy({**self.snapshot, 'jobs': list(self.jobs.values())[-25:]})
+            if since == self.revision:
+                return dict(unchanged=True, revision=self.revision)
+            return copy.deepcopy({**self.snapshot, 'jobs': list(self.jobs.values())[-25:],
+                                  'revision': self.revision})
 
     def submit(self, action, payload):
         with self.lock:
@@ -139,6 +143,7 @@ class Service:
                 raise ValueError('Operation queue is full; wait for current work to finish')
             job_id = secrets.token_hex(12)
             self.jobs[job_id] = dict(id=job_id, action=action, status='queued', message='Queued')
+            self.revision += 1
             if len(self.jobs) > 100:
                 finished = [key for key, job in self.jobs.items() if job['status'] in ('done', 'error')]
                 for key in finished[:len(self.jobs)-100]: self.jobs.pop(key)
@@ -146,13 +151,19 @@ class Service:
         return job_id
 
     def run_job(self, job_id, action, payload):
-        with self.lock: self.jobs[job_id].update(status='running', message='Working…')
+        with self.lock:
+            self.jobs[job_id].update(status='running', message='Working…')
+            self.revision += 1
         try:
             with self.filesystem_lock:
                 result = self.execute(action, payload)
-            with self.lock: self.jobs[job_id].update(status='done', message=result or 'Done')
+            with self.lock:
+                self.jobs[job_id].update(status='done', message=result or 'Done')
+                self.revision += 1
         except Exception as exc:
-            with self.lock: self.jobs[job_id].update(status='error', message=str(exc))
+            with self.lock:
+                self.jobs[job_id].update(status='error', message=str(exc))
+                self.revision += 1
 
     def selected(self, values, mapping):
         if not isinstance(values, list) or not values: raise ValueError('Select at least one item')
@@ -172,7 +183,7 @@ class Service:
             self.entries = {identifier('entry', str(e.archive) + ':' + e.relative_path): e for e in entries}
         entries = list(self.entries.values())
         content_hashes = {}
-        copies, game_errors = archived_installations(entries, root, content_hashes)
+        copies, game_errors = archived_installations(entries, root, content_hashes, songs=songs)
         errors += self.catalog.errors + game_errors
         self.songs = {identifier('song', song.path): song for song in songs}
         self.archives = {}
@@ -204,6 +215,7 @@ class Service:
                 format='SNG' if entry.song.path.is_file() else 'Folder', **describe(entry.song)))
         groups = duplicate_review_groups(duplicate_items)
         with self.lock:
+            self.revision += 1
             self.snapshot = dict(config=dict(self.config), errors=list(dict.fromkeys(errors)), duplicates=groups, duplicate_items=duplicate_items,
                 songs=[dict(id=key, path=str(s.path.relative_to(root.resolve())), **describe(s)) for key, s in self.songs.items()],
                 archived=[dict(id=key, archive=str(e.archive.relative_to(backup)), archive_path=e.relative_path,
@@ -428,7 +440,9 @@ class Handler(BaseHTTPRequestHandler):
             session = self.session()
             if not session: return self.respond(401, {'error':'Sign in with the server access token'})
             if path == '/api/state':
-                return self.respond(200, {**self.server.service.public_state(), 'csrf':session['csrf'], 'version':VERSION})
+                since = parse_qs(urlsplit(self.path).query).get('since', [None])[0]
+                if since is not None: since = int(since)
+                return self.respond(200, {**self.server.service.public_state(since), 'csrf':session['csrf'], 'version':VERSION})
             return self.respond(404, {'error':'Not found'})
         except (OSError, ValueError) as exc: self.respond(400, {'error':str(exc)})
 

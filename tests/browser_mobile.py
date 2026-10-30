@@ -51,6 +51,13 @@ def run():
                     page.locator('#token').fill(token);page.get_by_role('button',name='Open library →').click()
                     expect(page.locator('#song-list .song-row')).to_have_count(1)
                     no_overflow()
+                    checkbox=page.locator('.song-select input')
+                    original_row=page.locator('.song-row').element_handle()
+                    checkbox.focus()
+                    with page.expect_response('**/api/state*') as idle_poll: pass
+                    assert idle_poll.value.json().get('unchanged') is True
+                    expect(checkbox).to_be_focused()
+                    assert page.evaluate('(row)=>row.isConnected',original_row)
                     if mobile:
                         expect(page.locator('.sidebar')).not_to_be_visible()
                         expect(page.locator('.mobile-nav')).to_be_visible()
@@ -61,7 +68,8 @@ def run():
                         page.locator('.song-extra summary').click()
                         assert page.locator('.song-extra').evaluate('(e)=>e.open')
                         # A real polling refresh must preserve expanded details.
-                        with page.expect_response('**/api/state'): pass
+                        with page.expect_response('**/api/state*') as poll: pass
+                        assert poll.value.json().get('unchanged') is True
                         assert page.locator('.song-extra').evaluate('(e)=>e.open')
                         page.locator('.song-select').click()
                         expect(page.locator('.bulk-actions')).to_be_visible()
@@ -87,6 +95,11 @@ def run():
                     page.locator('[name=songs_dir]').focus();no_overflow()
                     if mobile:
                         assert float(page.locator('[name=songs_dir]').evaluate('(e)=>getComputedStyle(e).fontSize').replace('px',''))>=16
+                    path_input=page.locator('[name=songs_dir]')
+                    path_input.fill('/')
+                    page.get_by_role('button',name='Save server settings',exact=True).click()
+                    expect(page.locator('#error-box')).to_be_visible()
+                    expect(path_input).to_have_value('/')
                     navigate('activity');navigate('files');navigate('trash');navigate('songs')
                     page.locator('#open-import').click();expect(page.locator('#import-dialog')).to_be_visible();no_overflow()
                     page.get_by_role('button',name='Close import',exact=True).click()

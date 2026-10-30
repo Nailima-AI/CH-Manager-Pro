@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import zipfile
 
 from ch_web import Service, WebServer
@@ -90,6 +91,35 @@ class WebTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.service.execute('remove_archived', {'ids':['fake']})
         with self.assertRaises(ValueError): self.service.execute('install', {'ids':['../../sensitive']})
         with self.assertRaises(ValueError): self.service.execute('import', {'upload':'../outside.zip'})
+
+    def test_conditional_state_skips_payload_copy_and_updates_after_jobs(self):
+        server=self.start_http();auth=self.login(server)
+        code,_,body=self.http(server,'GET','/api/state',headers=auth)
+        original=json.loads(body);revision=original['revision']
+        with patch('ch_web.copy.deepcopy',side_effect=AssertionError('Unchanged polls must not copy the library')):
+            code,_,body=self.http(server,'GET',f'/api/state?since={revision}',headers=auth)
+        result=json.loads(body)
+        self.assertEqual(code,200);self.assertTrue(result['unchanged'])
+        self.assertNotIn('songs',result);self.assertEqual(result['csrf'],original['csrf'])
+        self.assertEqual(self.http(server,'GET',f'/api/state?since={revision}')[0],401)
+        self.assertEqual(self.http(server,'GET','/api/state?since=invalid',headers=auth)[0],400)
+        job=self.service.submit('settings',{'organization':'artist'})
+        until=time.monotonic()+3
+        while self.service.jobs[job]['status'] in ('queued','running') and time.monotonic()<until:time.sleep(.01)
+        code,_,body=self.http(server,'GET',f'/api/state?since={revision}',headers=auth)
+        changed=json.loads(body)
+        self.assertGreater(changed['revision'],revision);self.assertNotIn('unchanged',changed)
+        self.assertEqual(changed['config']['organization'],'artist')
+
+    def test_refresh_reuses_installed_song_scan(self):
+        from library_core import scan_library
+        entries=self.archived_fixture()
+        self.service.execute('install',{'ids':[entries[0]['id']]})
+        with patch('ch_web.scan_library',wraps=scan_library) as main_scan, patch('library_core.scan_library',wraps=scan_library) as repeated_scan:
+            self.service.refresh(False)
+        self.assertEqual(main_scan.call_count,1)
+        self.assertEqual(repeated_scan.call_count,0)
+        self.assertEqual(len(self.service.public_state()['songs']),1)
 
     def test_async_job_records_failure(self):
         job = self.service.submit('install', {'ids':['missing']})

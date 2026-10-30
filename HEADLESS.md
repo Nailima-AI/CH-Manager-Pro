@@ -57,6 +57,12 @@ Uploaded originals wait in the data directory's `incoming/` folder until importe
 
 Full-content installed-state checks include audio and metadata and can take time on large collections. Edited installed songs may appear not installed and will not be removed as exact archive matches. Native `.sng` files are supported as described below. Game folders directly at the library root, nested songs-inside-songs, and symlinks require manual review, as in the desktop version.
 
+## Refresh performance and recovery
+
+The browser sends its last state revision when polling. If library data and job status have not changed, the server returns a small response without copying or serializing the collection, and the browser keeps the existing rows and keyboard focus. Poll requests are serialized within each page; responses from an earlier signed-in session are ignored after sign-out. Settings inputs remain available after a failed save so you can correct them.
+
+Each refresh scans installed chart metadata once and reuses those results for archive matching. Full-content hashes are still read fresh for duplicate review and removal checks. Copies reserve a new destination before writing, clean up their own incomplete output on failure, and leave an existing/concurrently created destination untouched.
+
 ## Phone navigation
 
 On screens up to 760 px wide, use the fixed **Library / Archive / Duplicates / More** navigation at the bottom. More opens archive files, Trash, server settings, Activity, and Sign out. Switching pages closes the menu and returns to the page heading; browser Back/Forward restores the selected page. Desktop screens keep the sidebar.

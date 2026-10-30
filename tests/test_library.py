@@ -170,4 +170,54 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(len(scan_library(target)[0]), 1)
 
 
+
+
+class CopyOwnershipTests(unittest.TestCase):
+    def test_existing_destination_is_preserved_for_files_and_folders(self):
+        from library_core import copy_song
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for directory in (False,True):
+                source=root/('folder' if directory else 'song.sng')
+                if directory:source.mkdir();(source/'notes.mid').write_bytes(b'chart')
+                else:source.write_bytes(b'new')
+                target=root/('existing-folder' if directory else 'existing.sng')
+                if directory:target.mkdir();(target/'keep').write_bytes(b'old')
+                else:target.write_bytes(b'old')
+                with self.assertRaises(FileExistsError):copy_song(source,target)
+                self.assertEqual((target/'keep').read_bytes() if directory else target.read_bytes(),b'old')
+
+    def test_partial_owned_copy_is_cleaned_up(self):
+        from library_core import copy_song
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);source=root/'source';source.mkdir();(source/'notes.mid').write_bytes(b'chart')
+            target=root/'copy'
+            def fail_copy(src,dst,**kwargs):
+                (Path(dst)/'partial').write_bytes(b'partial')
+                raise OSError('Simulated full disk')
+            with patch('library_core.shutil.copytree',side_effect=fail_copy):
+                with self.assertRaises(OSError):copy_song(source,target)
+            self.assertFalse(target.exists());self.assertTrue((source/'notes.mid').exists())
+            native=root/'file.sng';native.write_bytes(b'original')
+            with patch('library_core.shutil.copyfileobj',side_effect=OSError('Simulated full disk')):
+                with self.assertRaises(OSError):copy_song(native,root/'file-copy.sng')
+            self.assertFalse((root/'file-copy.sng').exists());self.assertEqual(native.read_bytes(),b'original')
+
+    def test_import_and_selective_install_preserve_concurrent_destination(self):
+        from test_sng import sng_bytes
+        from library_core import ArchiveCatalog, activate_archived
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);game=root/'game';game.mkdir();backups=root/'backups';backups.mkdir()
+            source=backups/'Original.sng';source.write_bytes(sng_bytes())
+            occupied=game/'Raced.txt';occupied.write_bytes(b'Unrelated concurrent file')
+            catalog=ArchiveCatalog()
+            try:
+                entries,errors=catalog.scan(backups);self.assertEqual(errors,[])
+                for install in (lambda:install_archive(source,game),lambda:activate_archived(entries,game)):
+                    with patch('library_core.unique_path',return_value=occupied):
+                        with self.assertRaises(FileExistsError):install()
+                    self.assertEqual(occupied.read_bytes(),b'Unrelated concurrent file')
+            finally:catalog.close()
+
+
 if __name__ == '__main__': unittest.main()
