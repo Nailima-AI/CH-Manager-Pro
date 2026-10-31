@@ -2,6 +2,7 @@ services:
   ch-manager:
     build: .
     restart: unless-stopped
+    init: true
     ports:
       - "127.0.0.1:8899:8899"
     volumes:
@@ -10,5 +11,13 @@ services:
       # - /srv/clonehero/Songs:/songs
       # - /srv/clonehero/Archives:/archives
       # - /srv/clonehero/Downloads:/downloads
+      # Or mount an NFS export directly (see the songs-nfs volume below):
+      # - songs-nfs:/songs
 volumes:
   ch-manager-data:
+  # songs-nfs:
+  #   driver: local
+  #   driver_opts:
+  #     type: nfs
+  #     o: addr=192.168.1.10,rw,nfsvers=4.2
+  #     device: ":/export/clonehero/Songs"

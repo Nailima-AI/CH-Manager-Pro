@@ -91,7 +91,10 @@ jobs:
 
           ready()
           assert compose('exec', '-T', 'ch-manager', 'id', '-u') == '1000'
-          compose('exec', '-T', 'ch-manager', '7z', 'i')
+          codecs = compose('exec', '-T', 'ch-manager', '7z', 'i')
+          assert 'Rar5' in codecs, 'RAR codec (p7zip-rar) missing from image'
+          health = compose('ps', '--format', '{{.Health}}')
+          print('Container health:', health)
           for path in ('/app.js', '/style.css'):
               assert request(path)[1]
           request('/api/state', expected=401)
