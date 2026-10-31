@@ -463,7 +463,12 @@ def remove_song(path):
     else: Path(path).unlink()
 
 
-def install_archive(source, root, mode='none'):
+def install_archive(source, root, mode='none', skip_existing=False, hash_cache=None):
+    """Install every song in an archive.
+
+    With skip_existing, songs whose full content already exists in the game
+    library are not copied again (re-downloaded packs do not create duplicates).
+    """
     root = Path(root).expanduser().resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='ch-manager-') as temporary:
         sandbox = Path(temporary)
@@ -473,6 +478,13 @@ def install_archive(source, root, mode='none'):
             raise ValueError('\n'.join(errors))
         if not songs:
             raise ValueError('Archive contains no notes.chart/notes.mid/notes.midi songs')
+        if len(songs) > 1 and any(s.path == sandbox for s in songs):
+            raise ValueError('Archive mixes root and nested songs')
+        if skip_existing:
+            pending = [ArchivedSong(Path(source), '', song, song_content_hash(song.path)) for song in songs]
+            # Unreadable game copies are reported elsewhere; they never block an install.
+            copies, _ = archived_installations(pending, root, hash_cache=hash_cache)
+            songs = [entry.song for entry in pending if not copies.get(entry.content_hash)]
         installed = []
         try:
             for song in songs:
@@ -533,51 +545,134 @@ def song_content_hash(path):
     return digest.hexdigest()
 
 
+def file_stamp(path):
+    """Cheap change detector: size, mtime, ctime and inode (ctime cannot be set by users)."""
+    info = os.stat(path, follow_symlinks=False)
+    return (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino)
+
+
 class ArchiveCatalog:
-    """Window-scoped extracted catalog; source archives are always kept untouched."""
+    """Extracted archive catalog; source archives are always kept untouched.
+
+    Calling scan() again on the same root is incremental: archives whose size,
+    mtime, ctime and inode are unchanged keep their extracted sandbox and hashes,
+    so importing one pack no longer re-extracts the whole archive collection.
+    """
     def __init__(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='ch-archive-library-')
         self.entries = []
         self.errors = []
         self.sandbox_count = 0
+        self.root = None
+        self.cache = {}  # archive path -> (stamp, sandbox or None, entries, errors)
 
     def close(self):
         self.temporary.cleanup()
 
+    def scan_archive(self, archive, root):
+        entries, errors = [], []
+        if archive_format(archive) == 'sng':
+            try:
+                song = read_sng_song(archive, root)
+                entries.append(ArchivedSong(archive, '.', song, song_content_hash(archive)))
+            except (OSError, ValueError) as exc: errors.append(f'{archive.name}: {exc}')
+            return None, entries, errors
+        sandbox = Path(self.temporary.name) / str(self.sandbox_count)
+        self.sandbox_count += 1
+        sandbox.mkdir()
+        try:
+            extract_archive(archive, sandbox)
+            songs, scan_errors = scan_library(sandbox)
+            errors.extend(f'{archive.name}: {error}' for error in scan_errors)
+            if not songs: errors.append(f'{archive.name}: No supported song charts found')
+            for song in songs:
+                if song.path == sandbox:
+                    if len(songs) != 1: raise ValueError('Root and nested songs are mixed')
+                else:
+                    validate_source(song.path, sandbox)
+                entries.append(ArchivedSong(archive, song.path.relative_to(sandbox).as_posix(),
+                                            song, song_content_hash(song.path)))
+        except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, RuntimeError) as exc:
+            errors.append(f'{archive.name}: {exc}')
+        return sandbox, entries, errors
+
     def scan(self, backup_root):
         root = Path(backup_root).expanduser().resolve(strict=True)
-        for folder, dirs, files in os.walk(root, followlinks=False):
-            dirs[:] = sorted(d for d in dirs if not (Path(folder) / d).is_symlink())
-            for name in sorted(files):
-                archive = Path(folder) / name
-                if archive.is_symlink() or not archive_format(archive): continue
-                if archive_format(archive) == 'sng':
-                    try:
-                        song = read_sng_song(archive, root)
-                        self.entries.append(ArchivedSong(archive, '.', song, song_content_hash(archive)))
-                    except (OSError, ValueError) as exc: self.errors.append(f'{archive.name}: {exc}')
-                    continue
-                sandbox = Path(self.temporary.name) / str(self.sandbox_count)
-                self.sandbox_count += 1
-                sandbox.mkdir()
-                try:
-                    extract_archive(archive, sandbox)
-                    songs, errors = scan_library(sandbox)
-                    self.errors.extend(f'{archive.name}: {error}' for error in errors)
-                    if not songs: self.errors.append(f'{archive.name}: No supported song charts found')
-                    for song in songs:
-                        if song.path == sandbox:
-                            if len(songs) != 1: raise ValueError('Root and nested songs are mixed')
-                        else:
-                            validate_source(song.path, sandbox)
-                        self.entries.append(ArchivedSong(archive, song.path.relative_to(sandbox).as_posix(),
-                                                         song, song_content_hash(song.path)))
-                except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, RuntimeError) as exc:
-                    self.errors.append(f'{archive.name}: {exc}')
+        if self.root is not None and root != self.root:
+            for _, sandbox, _, _ in self.cache.values():
+                if sandbox: shutil.rmtree(sandbox, ignore_errors=True)
+            self.cache = {}
+        self.root = root
+        cache, created = {}, []
+        entries, errors = [], []
+        try:
+            for folder, dirs, files in os.walk(root, followlinks=False):
+                dirs[:] = sorted(d for d in dirs if not (Path(folder) / d).is_symlink())
+                for name in sorted(files):
+                    archive = Path(folder) / name
+                    if archive.is_symlink() or not archive_format(archive): continue
+                    try: stamp = file_stamp(archive)
+                    except OSError as exc:
+                        errors.append(f'{archive.name}: {exc}'); continue
+                    previous = self.cache.get(str(archive))
+                    if previous and previous[0] == stamp:
+                        record = previous
+                    else:
+                        sandbox, found, problems = self.scan_archive(archive, root)
+                        if sandbox: created.append(sandbox)
+                        record = (stamp, sandbox, found, problems)
+                    cache[str(archive)] = record
+                    entries.extend(record[2]); errors.extend(record[3])
+        except Exception:
+            for sandbox in created: shutil.rmtree(sandbox, ignore_errors=True)
+            raise
+        kept = {record[1] for record in cache.values()}
+        for _, sandbox, _, _ in self.cache.values():
+            if sandbox and sandbox not in kept: shutil.rmtree(sandbox, ignore_errors=True)
+        self.cache, self.entries, self.errors = cache, entries, errors
         return self.entries, self.errors
 
 
-def archived_installations(entries, game_root, content_hashes=None, songs=None):
+def song_signature(path):
+    """Stat-only signature of every file in a song; raises on symlinks like song_content_hash."""
+    path = Path(path)
+    if path.is_file(): return (('', file_stamp(path)),)
+    signature = []
+    for folder, dirs, files in os.walk(path, followlinks=False):
+        dirs.sort()
+        for name in dirs + files:
+            if (Path(folder) / name).is_symlink():
+                raise ValueError(f'Cannot fingerprint symbolic link: {name}')
+        for name in sorted(files):
+            child = Path(folder) / name
+            signature.append((child.relative_to(path).as_posix(), file_stamp(child)))
+    return tuple(signature)
+
+
+class ContentHashCache:
+    """Reuse full-content hashes for display while every file's stat signature is unchanged.
+
+    Safety-critical paths (installing over, removing) still hash fresh.
+    """
+    def __init__(self):
+        self.values = {}
+
+    def get(self, path):
+        path = Path(path)
+        signature = song_signature(path)
+        cached = self.values.get(path)
+        if cached and cached[0] == signature: return cached[1]
+        fingerprint = song_content_hash(path)
+        # Store only if nothing changed while reading.
+        if song_signature(path) == signature: self.values[path] = (signature, fingerprint)
+        return fingerprint
+
+    def prune(self, keep):
+        keep = set(keep)
+        self.values = {k: v for k, v in self.values.items() if k in keep}
+
+
+def archived_installations(entries, game_root, content_hashes=None, songs=None, hash_cache=None):
     if songs is None:
         songs, errors = scan_library(game_root)
     else:
@@ -589,7 +684,7 @@ def archived_installations(entries, game_root, content_hashes=None, songs=None):
         if song.chart_hash not in relevant_charts: continue
         try:
             validate_source(song.path, root)
-            fingerprint = song_content_hash(song.path)
+            fingerprint = hash_cache.get(song.path) if hash_cache else song_content_hash(song.path)
             if content_hashes is not None: content_hashes[song.path] = fingerprint
             copies[fingerprint].append(song.path)
         except (OSError, ValueError) as exc:

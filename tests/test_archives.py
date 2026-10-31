@@ -130,5 +130,43 @@ class ArchiveTests(unittest.TestCase):
         self.assertFalse(extracted.exists())
         self.assertTrue((self.backup / 'Pack.zip').exists())
 
+    def test_rescan_is_incremental_and_prunes_removed_archives(self):
+        from unittest.mock import patch
+        import library_core
+        first = self.archive('One.zip'); self.archive('Two.zip')
+        catalog, entries = self.catalog()
+        self.assertEqual(len(entries), 4)
+        sandboxes = {e.song.path.parent.parent for e in entries}
+        with patch('library_core.extract_archive', wraps=library_core.extract_archive) as extract:
+            entries, errors = catalog.scan(self.backup)
+        self.assertEqual(extract.call_count, 0); self.assertFalse(errors)
+        self.assertEqual(len(entries), 4)  # Rescans replace entries instead of appending.
+        self.archive('Three.zip', audio=b'other')
+        first.unlink()
+        with patch('library_core.extract_archive', wraps=library_core.extract_archive) as extract:
+            entries, errors = catalog.scan(self.backup)
+        self.assertEqual(extract.call_count, 1)
+        self.assertEqual(sorted({e.archive.name for e in entries}), ['Three.zip', 'Two.zip'])
+        self.assertEqual(sum(not s.exists() for s in sandboxes), 1)
+        # A different root drops every cached sandbox.
+        other = self.root / 'Other'; other.mkdir()
+        self.assertEqual(catalog.scan(other), ([], []))
+        self.assertFalse(any(e.song.path.exists() for e in entries))
+
+    def test_content_hash_cache_reuses_until_files_change(self):
+        from unittest.mock import patch
+        import library_core
+        song = self.game / 'Song'; song.mkdir()
+        (song / 'notes.mid').write_bytes(b'chart'); (song / 'song.ogg').write_bytes(b'audio')
+        cache = library_core.ContentHashCache()
+        original = cache.get(song)
+        with patch('library_core.song_content_hash', side_effect=AssertionError('cache miss')):
+            self.assertEqual(cache.get(song), original)
+        (song / 'song.ogg').write_bytes(b'changed audio')
+        self.assertNotEqual(cache.get(song), original)
+        self.assertEqual(cache.get(song), song_content_hash(song))
+        cache.prune([])
+        self.assertEqual(cache.values, {})
+
 
 if __name__ == '__main__': unittest.main()
