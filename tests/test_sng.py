@@ -1,14 +1,10 @@
 """Independent SNGPKG v1 fixtures based on the public binary specification."""
 import hashlib
-import io
-import json
 from pathlib import Path
 import shutil
 import struct
 import tempfile
-import time
 import unittest
-from unittest.mock import patch
 import zipfile
 
 from library_core import (SngReader, ArchiveCatalog, activate_archived, apply_moves,

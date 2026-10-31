@@ -53,15 +53,17 @@ ZIP and SNG work with Python alone. RAR/7z need `7z` or `7zz`; some RAR codecs n
 sudo apt install 7zip
 ```
 
+Imports that install songs skip any song whose full content is already in the game folder, so re-downloading a pack archives it again (shown in Duplicate review) without creating `Song (2)` copies. Extraction is refused when the archive's listed size would leave less than 64 MiB free on the temporary filesystem.
+
 Uploaded originals wait in the data directory's `incoming/` folder until imported. Failed imports remain there for administrator inspection/retry. The default upload limit is **2 GiB per archive**; use `--max-upload-mib 8192` for 8 GiB. Archive extraction can need considerably more temporary disk space than the compressed file; scanning uses the server's temporary directory. Only import trusted chart packs.
 
 Full-content installed-state checks include audio and metadata and can take time on large collections. Edited installed songs may appear not installed and will not be removed as exact archive matches. Native `.sng` files are supported as described below. Game folders directly at the library root, nested songs-inside-songs, and symlinks require manual review, as in the desktop version.
 
 ## Refresh performance and recovery
 
-The browser sends its last state revision when polling. If library data and job status have not changed, the server returns a small response without copying or serializing the collection, and the browser keeps the existing rows and keyboard focus. Poll requests are serialized within each page; responses from an earlier signed-in session are ignored after sign-out. Settings inputs remain available after a failed save so you can correct them.
+The browser sends its last state and library revisions when polling. If nothing changed, the server returns a small response without copying or serializing the collection. If only operation status changed (for example while a long import runs), the server sends just the job list and the browser keeps the existing rows and keyboard focus. Poll requests are serialized within each page; responses from an earlier signed-in session are ignored after sign-out. Settings inputs remain available after a failed save so you can correct them.
 
-Each refresh scans installed chart metadata once and reuses those results for archive matching. Full-content hashes are still read fresh for duplicate review and removal checks. Copies reserve a new destination before writing, clean up their own incomplete output on failure, and leave an existing/concurrently created destination untouched.
+Each refresh scans installed chart metadata once and reuses those results for archive matching. Archive rescans are incremental: only new or changed archive files (size, modification/change time or inode) are extracted again, and removed archives are dropped from the catalog. Full-content hashes for display and duplicate review are reused while every file in a song keeps the same size, modification/change time and inode; installing and removing still re-read the song content before acting. Copies reserve a new destination before writing, clean up their own incomplete output on failure, and leave an existing/concurrently created destination untouched.
 
 ## Phone navigation
 
@@ -110,7 +112,7 @@ docker compose up -d --build
 docker compose exec ch-manager cat /data/access-token
 ```
 
-The included Compose file publishes `127.0.0.1:8899` and persists app data plus the default song/archive/watch folders in a named volume. To reuse host folders, enable the example volume mappings and then set the **container paths** (`/songs`, `/archives`, `/downloads`) in Settings. The image runs as UID/GID 1000; adjust host permissions or the container user to match your storage. For HTTPS proxy access, override the command with `--allowed-hosts your-hostname --secure-cookie` and connect through a private container network. Docker's included `p7zip-full` package may not support every RAR codec; supply a compatible codec package/image if required. GitHub Actions builds this image and runs a Compose smoke test on Ubuntu x86-64, covering startup as UID 1000, login, frontend assets, archive upload/import, native SNG imports, archive duplicate review, selective song installation, removal/restore, and persistence after container recreation. Other CPU architectures and optional host-folder bind mounts have not been tested.
+The included Compose file publishes `127.0.0.1:8899` and persists app data plus the default song/archive/watch folders in a named volume. To reuse host folders, enable the example volume mappings and then set the **container paths** (`/songs`, `/archives`, `/downloads`) in Settings. The image runs as UID/GID 1000; adjust host permissions or the container user to match your storage. For HTTPS proxy access, override the command with `--allowed-hosts your-hostname --secure-cookie` and connect through a private container network. The image installs `p7zip-full` plus Debian's non-free `p7zip-rar`, so RAR packs import in the container; CI checks that the RAR5 codec is present. The container has a health check against the sign-in page. A commented NFS named-volume example is included in `compose.yaml` for mounting the song export directly. GitHub Actions builds this image and runs a Compose smoke test on Ubuntu x86-64, covering startup as UID 1000, login, frontend assets, archive upload/import, native SNG imports, archive duplicate review, selective song installation, removal/restore, and persistence after container recreation. Other CPU architectures and optional host-folder bind mounts have not been tested.
 
 ## systemd
 
