@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 from library_core import (ArchiveCatalog, activate_archived, archive_format,
     archived_installations, apply_moves, deactivate_archived,
     install_archive, plan_moves, scan_library, unique_path, validate_source, inside,
-    song_content_hash, normalized, UNKNOWN)
+    ContentHashCache, normalized, UNKNOWN)
 
 VERSION = '6.1-web'
 ASSETS = Path(__file__).resolve().parent / 'web'
@@ -64,6 +64,8 @@ def duplicate_review_groups(items):
 
 
 class Service:
+    lock_timeout = 5  # Seconds a request thread waits for the library worker.
+
     def __init__(self, data_dir):
         self.data = Path(data_dir).expanduser().resolve()
         self.data.mkdir(parents=True, exist_ok=True)
@@ -80,6 +82,7 @@ class Service:
         self.trash_path = self.data / 'trash.json'
         self.trash = json.loads(self.trash_path.read_text()) if self.trash_path.exists() else {}
         self.catalog = None
+        self.hash_cache = ContentHashCache()
         self.songs, self.entries, self.archives = {}, {}, {}
         self.plans = {}
         self.snapshot = dict(songs=[], archived=[], archives=[], duplicates=[], errors=[], config=self.config, trash=[])
@@ -89,6 +92,7 @@ class Service:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='ch-library')
         self.jobs = {}
         self.revision = 0
+        self.data_revision = 0  # Library snapshot only; job progress bumps revision alone.
         self.stop = threading.Event()
         self.watch_thread = None
         self.closed = False
@@ -130,12 +134,19 @@ class Service:
         if self.catalog: self.catalog.close()
         self.closed = True
 
-    def public_state(self, since=None):
+    def public_state(self, since=None, data_since=None):
+        """Snapshots are replaced wholesale, never mutated, so a shallow copy is safe.
+
+        When only jobs changed, omit the library so polling during long operations
+        does not resend and re-render the whole collection."""
         with self.lock:
             if since == self.revision:
-                return dict(unchanged=True, revision=self.revision)
-            return copy.deepcopy({**self.snapshot, 'jobs': list(self.jobs.values())[-25:],
-                                  'revision': self.revision})
+                return dict(unchanged=True, revision=self.revision, data_revision=self.data_revision)
+            jobs = [copy.copy(job) for job in list(self.jobs.values())[-25:]]
+            base = dict(jobs=jobs, revision=self.revision, data_revision=self.data_revision)
+            if data_since == self.data_revision:
+                return dict(base, partial=True)
+            return {**self.snapshot, **base}
 
     def submit(self, action, payload):
         with self.lock:
@@ -174,25 +185,33 @@ class Service:
     def refresh(self, archives=False):
         root = Path(self.config['songs_dir'])
         songs, errors = scan_library(root)
+        backup = Path(self.config['backup_dir']).resolve()
         if archives or not self.catalog:
-            catalog = ArchiveCatalog()
-            try: entries, archive_errors = catalog.scan(self.config['backup_dir'])
-            except Exception: catalog.close(); raise
-            if self.catalog: self.catalog.close()
-            self.catalog = catalog
-            self.entries = {identifier('entry', str(e.archive) + ':' + e.relative_path): e for e in entries}
+            if self.catalog and self.catalog.root == backup:
+                # Incremental: only new or changed archives are extracted again.
+                self.catalog.scan(backup)
+            else:
+                catalog = ArchiveCatalog()
+                try: catalog.scan(backup)
+                except Exception: catalog.close(); raise
+                if self.catalog: self.catalog.close()
+                self.catalog = catalog
+            self.entries = {identifier('entry', str(e.archive) + ':' + e.relative_path): e for e in self.catalog.entries}
         entries = list(self.entries.values())
         content_hashes = {}
-        copies, game_errors = archived_installations(entries, root, content_hashes, songs=songs)
+        copies, game_errors = archived_installations(entries, root, content_hashes, songs=songs,
+                                                     hash_cache=self.hash_cache)
         errors += self.catalog.errors + game_errors
         self.songs = {identifier('song', song.path): song for song in songs}
         self.archives = {}
-        backup = Path(self.config['backup_dir']).resolve()
+        archive_sizes = {}
         for folder, dirs, files in os.walk(backup, followlinks=False):
             dirs[:] = sorted(d for d in dirs if not (Path(folder) / d).is_symlink())
             for filename in sorted(files):
                 path = Path(folder) / filename
                 if path.is_symlink() or not archive_format(path): continue
+                try: archive_sizes[path] = path.stat().st_size
+                except OSError as exc: errors.append(f'{path}: {exc}'); continue
                 self.archives[identifier('archive', path)] = path
         def describe(song):
             return dict(name=song.name, artist=song.artist, author=song.author, game=song.game,
@@ -201,7 +220,7 @@ class Service:
         duplicate_items = []
         for key, song in self.songs.items():
             try:
-                fingerprint = content_hashes.get(song.path) or song_content_hash(song.path)
+                fingerprint = content_hashes.get(song.path) or self.hash_cache.get(song.path)
             except (OSError,ValueError) as exc:
                 errors.append(f'{song.path}: {exc}'); fingerprint = ''
             duplicate_items.append(dict(id=key, scope='installed', path=str(song.path.relative_to(root.resolve())),
@@ -214,14 +233,15 @@ class Service:
                 installed=len(copies.get(entry.content_hash,[])),
                 format='SNG' if entry.song.path.is_file() else 'Folder', **describe(entry.song)))
         groups = duplicate_review_groups(duplicate_items)
+        self.hash_cache.prune(song.path for song in songs)
         with self.lock:
-            self.revision += 1
+            self.revision += 1; self.data_revision += 1
             self.snapshot = dict(config=dict(self.config), errors=list(dict.fromkeys(errors)), duplicates=groups, duplicate_items=duplicate_items,
                 songs=[dict(id=key, path=str(s.path.relative_to(root.resolve())), **describe(s)) for key, s in self.songs.items()],
                 archived=[dict(id=key, archive=str(e.archive.relative_to(backup)), archive_path=e.relative_path,
                     installed=len(copies.get(e.content_hash, [])), installed_paths=[str(p.relative_to(root.resolve())) for p in copies.get(e.content_hash, [])],
                     **describe(e.song)) for key, e in self.entries.items()],
-                archives=[dict(id=key, path=str(path.relative_to(backup)), bytes=path.stat().st_size) for key, path in self.archives.items()],
+                archives=[dict(id=key, path=str(path.relative_to(backup)), bytes=archive_sizes[path]) for key, path in self.archives.items()],
                 trash=[dict(id=key, original=item['original'], removed=item['removed']) for key, item in self.trash.items()])
         return f'Refreshed {len(songs)} installed songs and {len(entries)} archived song entries'
 
@@ -243,7 +263,8 @@ class Service:
         if type(install) is not bool: raise ValueError('Install choice must be true or false')
         # Validate even archive-only imports; this also rejects unsupported/unsafe archives.
         if install:
-            installed = install_archive(source, self.config['songs_dir'], self.config['organization'])
+            installed = install_archive(source, self.config['songs_dir'], self.config['organization'],
+                                        skip_existing=True, hash_cache=self.hash_cache)
         else:
             from library_core import extract_archive
             import tempfile
@@ -333,7 +354,10 @@ class Service:
         raise ValueError('Unknown operation')
 
     def preview(self, payload):
-        with self.filesystem_lock:
+        # Request threads must not hang behind a long scan or import.
+        if not self.filesystem_lock.acquire(timeout=self.lock_timeout):
+            raise ValueError('Library is busy with another operation; try the preview again shortly')
+        try:
             songs = self.selected(payload.get('ids'), self.songs)
             moves = plan_moves(songs, self.config['songs_dir'], payload.get('mode', 'artist'), payload.get('custom', ''))
             key = secrets.token_hex(16)
@@ -341,6 +365,8 @@ class Service:
             self.plans[key] = dict(created=time.time(), moves=moves)
             root = Path(self.config['songs_dir']).resolve()
             return dict(plan=key, moves=[dict(source=str(a.relative_to(root)), target=str(b.relative_to(root))) for a, b in moves])
+        finally:
+            self.filesystem_lock.release()
 
     def monitor(self):
         observed, attempted = {}, {}
@@ -375,7 +401,8 @@ class WebServer(ThreadingHTTPServer):
     def __init__(self, address, service, token, allowed_hosts=None, secure_cookie=False, max_upload=2 * 1024**3):
         self.service, self.token = service, token
         self.sessions = {}; self.session_lock = threading.Lock()
-        self.allowed_hosts = set(allowed_hosts or ['localhost', '127.0.0.1', '[::1]'])
+        # Hostnames are case-insensitive; urlsplit lowercases the request's hostname.
+        self.allowed_hosts = {h.strip().lower() for h in (allowed_hosts or ['localhost', '127.0.0.1', '[::1]']) if h.strip()}
         self.secure_cookie, self.max_upload = secure_cookie, max_upload
         self.login_attempts = {}
         super().__init__(address, Handler)
@@ -383,6 +410,7 @@ class WebServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = 'CHManagerWeb'
+    timeout = 120  # Per-socket-operation; idle or stalled clients cannot pin a thread forever.
     def log_message(self, *_): pass  # Never log authorization material or uploaded filenames.
 
     def respond(self, status, content, kind='application/json', headers=None):
@@ -440,14 +468,15 @@ class Handler(BaseHTTPRequestHandler):
             session = self.session()
             if not session: return self.respond(401, {'error':'Sign in with the server access token'})
             if path == '/api/state':
-                since = parse_qs(urlsplit(self.path).query).get('since', [None])[0]
-                if since is not None: since = int(since)
-                return self.respond(200, {**self.server.service.public_state(since), 'csrf':session['csrf'], 'version':VERSION})
+                query = parse_qs(urlsplit(self.path).query)
+                since, data_since = (query.get(name, [None])[0] for name in ('since', 'data'))
+                since = None if since is None else int(since)
+                data_since = None if data_since is None else int(data_since)
+                return self.respond(200, {**self.server.service.public_state(since, data_since), 'csrf':session['csrf'], 'version':VERSION})
             return self.respond(404, {'error':'Not found'})
         except (OSError, ValueError) as exc: self.respond(400, {'error':str(exc)})
 
     def do_POST(self):
-        self.connection.settimeout(120)
         try:
             if not self.safe_origin(): return self.respond(403, {'error':'Untrusted Host or Origin'})
             path = urlsplit(self.path).path
@@ -455,7 +484,10 @@ class Handler(BaseHTTPRequestHandler):
                 peer = self.client_address[0]
                 with self.server.session_lock:
                     now = time.time()
-                    attempts = [t for t in self.server.login_attempts.get(peer, []) if now-t < 60]
+                    # Drop expired entries for every peer so the table cannot grow without bound.
+                    self.server.login_attempts = {k: [t for t in v if now-t < 60] for k, v in self.server.login_attempts.items()}
+                    self.server.login_attempts = {k: v for k, v in self.server.login_attempts.items() if v}
+                    attempts = self.server.login_attempts.get(peer, [])
                     if len(attempts) >= 10: return self.respond(429, {'error':'Too many attempts; wait one minute'})
                     attempts.append(now); self.server.login_attempts[peer] = attempts
                 body = self.read_json()

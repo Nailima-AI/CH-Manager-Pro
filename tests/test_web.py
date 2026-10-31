@@ -212,5 +212,55 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.http(server,'POST','/api/upload?name=bad.exe',b'bad',auth)[0],400)
         self.assertEqual(self.http(server,'GET','/../../etc/passwd',headers=auth)[0],404)
 
+    def test_reimporting_same_pack_archives_again_without_duplicate_game_copies(self):
+        self.service.execute('import', dict(upload=self.upload_fixture().name, install=True))
+        self.assertEqual(len(self.service.public_state()['songs']), 2)
+        result = self.service.execute('import', dict(upload=self.upload_fixture('Again.zip').name, install=True))
+        current = self.service.public_state()
+        self.assertIn('0 song folders installed', result)
+        self.assertEqual(len(current['songs']), 2)
+        self.assertEqual(len(current['archives']), 2)
+        self.assertTrue(any(g['category'] == 'exact' for g in current['duplicates']))
+
+    def test_import_rescans_only_the_new_archive(self):
+        from unittest.mock import patch
+        import library_core
+        self.service.execute('import', dict(upload=self.upload_fixture().name, install=False))
+        with patch('library_core.extract_archive', wraps=library_core.extract_archive) as extract:
+            self.service.execute('import', dict(upload=self.upload_fixture('Second.zip').name, install=False))
+        # One validation extraction plus one catalog extraction for the new pack only.
+        self.assertEqual(extract.call_count, 2)
+        self.assertEqual(len(self.service.public_state()['archived']), 4)
+
+    def test_job_only_updates_omit_library_payload(self):
+        server=self.start_http();auth=self.login(server)
+        original=json.loads(self.http(server,'GET','/api/state',headers=auth)[2])
+        job=self.service.submit('install',{'ids':['missing']})
+        until=time.monotonic()+3
+        while self.service.jobs[job]['status'] in ('queued','running') and time.monotonic()<until:time.sleep(.01)
+        code,_,body=self.http(server,'GET',f"/api/state?since={original['revision']}&data={original['data_revision']}",headers=auth)
+        result=json.loads(body)
+        self.assertEqual(code,200);self.assertTrue(result['partial'])
+        self.assertNotIn('songs',result);self.assertEqual(result['jobs'][-1]['status'],'error')
+        self.assertEqual(result['data_revision'],original['data_revision'])
+        self.assertEqual(self.http(server,'GET','/api/state?since=1&data=x',headers=auth)[0],400)
+
+    def test_allowed_hosts_are_case_insensitive(self):
+        server=WebServer(('127.0.0.1',0), self.service, 'test-token-with-at-least-24-chars', allowed_hosts=['ChManager.LAN ', ''])
+        self.addCleanup(server.server_close)
+        self.assertEqual(server.allowed_hosts, {'chmanager.lan'})
+
+    def test_preview_reports_busy_instead_of_hanging(self):
+        entries=self.archived_fixture();self.service.execute('install',{'ids':[entries[0]['id']]})
+        song=self.service.public_state()['songs'][0]['id']
+        held=threading.Event();release=threading.Event()
+        def hold():
+            with self.service.filesystem_lock: held.set();release.wait(10)
+        threading.Thread(target=hold,daemon=True).start();held.wait(2)
+        try:
+            self.service.lock_timeout=.05
+            with self.assertRaisesRegex(ValueError,'busy'): self.service.preview(dict(ids=[song],mode='artist'))
+        finally: release.set()
+
 
 if __name__ == '__main__': unittest.main()
