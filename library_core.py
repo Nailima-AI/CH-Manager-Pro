@@ -400,6 +400,15 @@ def safe_member(name):
         raise ValueError(f'Unsafe archive member: {name}')
 
 
+def ensure_space(destination, needed):
+    """Refuse extraction that would fill the temporary filesystem (e.g. a ZIP bomb)."""
+    free = shutil.disk_usage(destination).free
+    # Keep 64 MiB headroom for the OS and the app's own JSON writes.
+    if needed > free - 64 * 1024**2:
+        raise ValueError(f'Archive expands to {needed // 1024**2} MiB but only '
+                         f'{max(free, 0) // 1024**2} MiB is free for extraction')
+
+
 def extract_archive(source, destination):
     source, destination = Path(source), Path(destination)
     if archive_format(source) == 'sng':
@@ -413,6 +422,7 @@ def extract_archive(source, destination):
                 mode = entry.external_attr >> 16
                 if stat.S_ISLNK(mode):
                     raise ValueError('Archive contains symbolic links')
+            ensure_space(destination, sum(entry.file_size for entry in archive.infolist()))
             archive.extractall(destination)
     else:
         executable = shutil.which('7z') or shutil.which('7zz')
@@ -422,12 +432,15 @@ def extract_archive(source, destination):
                                  check=True, capture_output=True, text=True).stdout
         if '----------' not in listing:
             raise ValueError('Cannot validate archive listing')
+        total = 0
         for block in listing.split('----------', 1)[1].split('\n\n'):
             fields = dict(line.split(' = ', 1) for line in block.splitlines() if ' = ' in line)
             if 'Path' in fields:
                 safe_member(fields['Path'])
             if any('link' in k.lower() for k in fields) or fields.get('Attributes', '').startswith('l'):
                 raise ValueError('Archive contains links')
+            if fields.get('Size', '').isdigit(): total += int(fields['Size'])
+        ensure_space(destination, total)
         subprocess.run([executable, 'x', '-y', f'-o{destination}', '--', str(source)], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     for folder, dirs, files in os.walk(destination):

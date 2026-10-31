@@ -168,5 +168,18 @@ class ArchiveTests(unittest.TestCase):
         cache.prune([])
         self.assertEqual(cache.values, {})
 
+    def test_extraction_refuses_archives_larger_than_free_space(self):
+        from collections import namedtuple
+        from unittest.mock import patch
+        from library_core import extract_archive
+        archive = self.archive()
+        usage = namedtuple('usage', 'total used free')
+        target = self.root / 'Extract'; target.mkdir()
+        with patch('library_core.shutil.disk_usage', return_value=usage(0, 0, 64 * 1024**2)):
+            with self.assertRaisesRegex(ValueError, 'free for extraction'): extract_archive(archive, target)
+        self.assertEqual(list(target.iterdir()), [])
+        extract_archive(archive, target)
+        self.assertTrue((target / 'Pack').is_dir())
+
 
 if __name__ == '__main__': unittest.main()
