@@ -20,7 +20,7 @@ Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-P
 
 ## Archived song library (5.2)
 
-Open **Library → Browse archived songs** to browse individual songs inside downloaded ZIP, RAR, and 7z backups, including multi-song packs and nested archive folders. Search by song, artist, charter, game, or archive name. Filter to **All archived songs**, **In game folder**, or **Not in game folder**.
+Open **Library → Browse archived songs** to browse individual songs inside downloaded ZIP, RAR, 7z and TAR (.tar, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz) backups, including multi-song packs and nested archive folders. Search by song, artist, charter, game, or archive name. Filter to **All archived songs**, **In game folder**, or **Not in game folder**.
 
 - Select songs and use **Install selected** to copy only those songs into the configured chart install folder. The new-import organization setting also controls their destination folders. Identical installed copies are skipped.
 - Use **Remove selected from game…** to review and send matching game-folder copies to desktop Trash. Original archives stay untouched, so you can install the songs again later. All identical copies listed for the selected archived songs are included in removal.
@@ -58,7 +58,7 @@ Scans recognize directories containing `notes.chart`, `notes.mid`, or `notes.mid
 
 ## Installation / upgrade
 
-Download this fork's **Code → Download ZIP**, or clone it. Keep `ch_manager_pro.py`, `library_core.py`, the installer, and `icons/` together. Use Python 3.10+, PyGObject, GTK **4.10+**, libadwaita **1.4+**, and Zenity. ZIP extraction uses Python; RAR/7z extraction requires `7z` or `7zz` with support for the archive codec. Your distribution may package the RAR codec separately.
+Download this fork's **Code → Download ZIP**, or clone it. Keep `ch_manager_pro.py`, `library_core.py`, the installer, and `icons/` together. Use Python 3.10+, PyGObject, GTK **4.10+**, libadwaita **1.4+**, and Zenity. ZIP and TAR extraction use Python; RAR/7z extraction requires `7z` or `7zz` with support for the archive codec. Your distribution may package the RAR codec separately.
 
 On Ubuntu 24.04, the GUI packages are:
 

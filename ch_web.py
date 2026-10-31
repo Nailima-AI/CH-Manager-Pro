@@ -521,7 +521,7 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > self.server.max_upload: return self.respond(413, {'error':'Archive exceeds configured upload limit'})
         params = parse_qs(urlsplit(self.path).query)
         filename = params.get('name',[''])[0]
-        if Path(filename).name != filename or '\\' in filename or not archive_format(filename): raise ValueError('Choose a ZIP, RAR, 7z or SNG file')
+        if Path(filename).name != filename or '\\' in filename or not archive_format(filename): raise ValueError('Choose a ZIP, RAR, 7z, TAR (.tar/.tar.gz/.tgz/.tar.bz2/.tar.xz) or SNG file')
         with self.server.service.upload_lock:
             path = unique_path(self.server.service.upload_dir / filename)
             try:

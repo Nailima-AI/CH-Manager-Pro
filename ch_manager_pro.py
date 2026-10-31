@@ -7,7 +7,7 @@ import subprocess
 import configparser
 import locale
 from pathlib import Path
-from library_core import scan_library, duplicate_groups, plan_moves, apply_moves, install_archive, unique_path, ArchiveCatalog, archived_installations, activate_archived, deactivate_archived
+from library_core import scan_library, duplicate_groups, plan_moves, apply_moves, install_archive, unique_path, ArchiveCatalog, archived_installations, activate_archived, deactivate_archived, archive_format
 import gi
 
 gi.require_version('Gtk', '4.0')
@@ -257,7 +257,7 @@ class MainWindow(Adw.ApplicationWindow):
         attempted = {}
         while self.app.monitoring and generation == self.monitor_generation:
             try:
-                files = [f for f in os.listdir(SYSTEM_DL_DIR) if f.lower().endswith(('.zip', '.rar', '.7z', '.sng'))]
+                files = [f for f in os.listdir(SYSTEM_DL_DIR) if archive_format(f)]
                 for f in files:
                     if not self.app.monitoring or generation != self.monitor_generation: break
                     fp = os.path.join(SYSTEM_DL_DIR, f)
@@ -324,7 +324,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.app.save_config()
 
     def on_open_backup(self, _): subprocess.Popen(["xdg-open", self.app.backup_dir])
-    def on_import_clicked(self, _): d = Gtk.FileDialog(title=tr("btn_import")); f = Gtk.FileFilter(); f.set_name("Archivi"); f.add_pattern("*.zip"); f.add_pattern("*.rar"); f.add_pattern("*.7z"); f.add_pattern("*.sng"); d.set_default_filter(f); d.open_multiple(self, None, self.on_files_selected)
+    def on_import_clicked(self, _): d = Gtk.FileDialog(title=tr("btn_import")); f = Gtk.FileFilter(); f.set_name("Archivi"); f.add_pattern("*.zip"); f.add_pattern("*.rar"); f.add_pattern("*.7z"); f.add_pattern("*.sng"); [f.add_pattern(p) for p in ("*.tar", "*.tar.gz", "*.tgz", "*.tar.bz2", "*.tbz", "*.tbz2", "*.tar.xz", "*.txz")]; d.set_default_filter(f); d.open_multiple(self, None, self.on_files_selected)
     def on_files_selected(self, dialog, result):
         try:
             files = dialog.open_multiple_finish(result)
@@ -385,7 +385,7 @@ class MainWindow(Adw.ApplicationWindow):
                         else: os.remove(fp)
                         rem.append(c); count += 1
                         if delete_backup_also:
-                            for ext in ['.zip', '.rar', '.7z', '.sng']:
+                            for ext in ['.zip', '.rar', '.7z', '.sng', '.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz']:
                                 ap = os.path.join(self.app.backup_dir, c.item_name + ext);
                                 if os.path.exists(ap): os.remove(ap)
                     except: pass

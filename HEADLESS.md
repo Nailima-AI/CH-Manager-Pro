@@ -41,13 +41,13 @@ Use **Settings** to set the server's game-song, archive, and download-watch path
 | Duplicate review | Compare installed and archived versions, filter by location/match type, inspect hashes/charter/game/path, install a preferred archived version, trash individual game copies, or review a whole source archive before trashing it |
 | Archive files | Browse original downloads, move selected archives to Trash independently of installed songs |
 | Trash & restore | Recover removed songs or archives; refuse restoration if the original path already exists |
-| Import archives | Upload ZIP/RAR/7z/SNG from the browser; choose archive-only or archive-and-install; keep original archives |
+| Import archives | Upload ZIP/RAR/7z/TAR (gz, bz2, xz)/SNG from the browser; choose archive-only or archive-and-install; keep original archives |
 | Settings | Game/archive/watch folders, automatic folder organization, download monitoring, and whether new imports install automatically |
 | Activity | Background operation status and errors; the most recent 25 operations are shown (in-memory history) |
 
 **There is no Clone Hero process detection.** Imports and monitoring never depend on the game being open. Turn off **Install new imports automatically** to build an archive first and select songs later. The watch folder must receive completed archives; it checks unchanged size/mtime across polling intervals. Failed monitored files retry after size/mtime changes or a server restart. Imports and filesystem mutations use a single worker queue. Long scans do not prevent the browser from showing current progress.
 
-ZIP and SNG work with Python alone. RAR/7z need `7z` or `7zz`; some RAR codecs need an extra distribution package. On Ubuntu 24.04:
+ZIP, TAR (.tar, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz) and SNG work with Python alone; TAR members that are links, devices or escape the folder are refused. RAR/7z need `7z` or `7zz`; some RAR codecs need an extra distribution package. On Ubuntu 24.04:
 
 ```sh
 sudo apt install 7zip

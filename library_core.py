@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import unicodedata
 import zipfile
@@ -299,7 +300,10 @@ def unique_path(path, reserved=None):
     reserved = reserved if reserved is not None else set()
     result, index = path, 2
     while result.exists() or result.is_symlink() or result in reserved:
-        result = path.with_name(f'{path.stem} ({index}){path.suffix}') if path.suffix.lower() in ('.zip', '.rar', '.7z', '.sng') else path.with_name(f'{path.name} ({index})')
+        # Single-suffix archives keep their extension last (pack (2).zip); multi-part
+        # suffixes such as .tar.gz use the trailing form (pack.tar.gz (2)), which
+        # archive_format() also recognizes.
+        result = path.with_name(f'{path.stem} ({index}){path.suffix}') if path.suffix.lower() in ('.zip', '.rar', '.7z', '.sng', '.tar', '.tgz', '.tbz', '.tbz2', '.txz') and not re.search(r'\.tar\.[^.]+$', path.name, re.I) else path.with_name(f'{path.name} ({index})')
         index += 1
     reserved.add(result)
     return result
@@ -415,6 +419,8 @@ def extract_archive(source, destination):
         SngReader(source)
         name = re.sub(r'(?i)\.sng(?: \(\d+\))?$', '', source.name) + '.sng'
         shutil.copy2(source, Path(destination) / name)
+    elif archive_format(source) == 'tar':
+        extract_tar(source, destination)
     elif archive_format(source) == 'zip':
         with zipfile.ZipFile(source) as archive:
             for entry in archive.infolist():
@@ -425,7 +431,7 @@ def extract_archive(source, destination):
             ensure_space(destination, sum(entry.file_size for entry in archive.infolist()))
             archive.extractall(destination)
     else:
-        executable = shutil.which('7z') or shutil.which('7zz')
+        executable = shutil.which('7z') or shutil.which('7zz') or shutil.which('7za')
         if not executable:
             raise ValueError('Install 7z/7zz to import RAR and 7z archives')
         listing = subprocess.run([executable, 'l', '-slt', '--', str(source)],
@@ -448,6 +454,38 @@ def extract_archive(source, destination):
             item = Path(folder) / name
             if item.is_symlink() or item.suffix.lower() in ('.exe', '.bat', '.sh', '.cmd', '.com', '.ps1'):
                 raise ValueError(f'Unsafe file in archive: {name}')
+
+
+def extract_tar(source, destination):
+    """tar, tar.gz/tgz, tar.bz2/tbz2 and tar.xz/txz with the Python standard library.
+
+    Members are validated first, then written one by one (no extractall), so links,
+    devices and path traversal are refused on every supported Python version.
+    """
+    destination = Path(destination)
+    with tarfile.open(source, 'r:*') as archive:
+        members = archive.getmembers()
+        for member in members:
+            safe_member(member.name)
+            if member.issym() or member.islnk():
+                raise ValueError('Archive contains links')
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(f'Unsupported archive member type: {member.name}')
+        ensure_space(destination, sum(member.size for member in members if member.isfile()))
+        root = destination.resolve()
+        for member in members:
+            target = destination.joinpath(*PurePosixPath(member.name.replace('\\', '/')).parts)
+            if not target.resolve().is_relative_to(root):
+                raise ValueError(f'Unsafe archive member: {member.name}')
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ValueError(f'Unreadable archive member: {member.name}')
+            with stream, target.open('wb') as output:
+                shutil.copyfileobj(stream, output)
 
 
 def copy_song(source, target):
@@ -531,8 +569,10 @@ class ArchivedSong:
 
 def archive_format(path):
     """Include numbered backups written by earlier versions (pack.zip (2))."""
-    match = re.search(r'\.(zip|rar|7z|sng)(?: \(\d+\))?$', str(path), re.I)
-    return match[1].lower() if match else None
+    match = re.search(r'\.(zip|rar|7z|sng|tar|tgz|tbz2?|txz|tar\.gz|tar\.bz2|tar\.xz)(?: \(\d+\))?$', str(path), re.I)
+    if not match: return None
+    kind = match[1].lower()
+    return kind if kind in ('zip', 'rar', '7z', 'sng') else 'tar'
 
 
 def song_content_hash(path):
@@ -605,7 +645,7 @@ class ArchiveCatalog:
                     validate_source(song.path, sandbox)
                 entries.append(ArchivedSong(archive, song.path.relative_to(sandbox).as_posix(),
                                             song, song_content_hash(song.path)))
-        except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, RuntimeError) as exc:
+        except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, tarfile.TarError, RuntimeError) as exc:
             errors.append(f'{archive.name}: {exc}')
         return sandbox, entries, errors
 
