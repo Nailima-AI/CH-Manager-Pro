@@ -4,6 +4,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from library_core import ArchiveCatalog, archive_format, extract_archive, install_archive, unique_path
@@ -109,6 +110,20 @@ class SevenZipFormatTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'links'):
                 extract_archive(root / 'evil.7z', out)
             self.assertEqual(list(out.iterdir()), [])
+
+    def test_encrypted_7z_fails_instead_of_prompting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); src = root / 'Song'; src.mkdir(); (src / 'notes.chart').write_text('[Song]')
+            exe = shutil.which('7z') or shutil.which('7zz')
+            subprocess.run([exe, 'a', '-psecret', '-mhe=on', str(root / 'enc.7z'), 'Song'], cwd=root, check=True, capture_output=True)
+            real_run = subprocess.run
+            def no_terminal(*args, **kwargs):
+                self.assertIs(kwargs.get('stdin'), subprocess.DEVNULL)  # a terminal stdin would hang on the password prompt
+                return real_run(*args, **kwargs)
+            out = root / 'out'; out.mkdir()
+            with unittest.mock.patch('library_core.subprocess.run', no_terminal):
+                with self.assertRaisesRegex(ValueError, '7z could not read'):
+                    extract_archive(root / 'enc.7z', out)
 
     def test_corrupt_7z_reports_value_error(self):
         with tempfile.TemporaryDirectory() as temp:

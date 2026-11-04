@@ -358,6 +358,7 @@ def plan_moves(songs, root, mode='artist', custom=''):
     if mode not in ('artist', 'author', 'game', 'custom'):
         raise ValueError('Unsupported organization mode')
     if mode == 'custom':
+        if not isinstance(custom, str): raise ValueError('Enter a folder name')
         relative = Path(custom.strip())
         if not custom.strip() or relative.is_absolute() or '..' in relative.parts or '\\' in custom:
             raise ValueError('Enter a relative folder inside the song library, without ..')
@@ -373,6 +374,7 @@ def plan_moves(songs, root, mode='artist', custom=''):
             continue
         if inside(parent.resolve(), song.path.resolve()):
             raise ValueError('Cannot move a song inside itself')
+        group_folder(root, group)
         moves.append((song.path, unique_path(destination, reserved)))
     return moves
 
@@ -452,6 +454,7 @@ def listed_link(fields):
 def run_7z(executable, *arguments):
     try:
         return subprocess.run([executable, *arguments], check=True, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL,  # Encrypted archives fail instead of prompting.
                               errors='replace')
     except subprocess.CalledProcessError as exc:
         detail = ' '.join(line.strip() for line in (exc.stderr or '').splitlines()
@@ -588,11 +591,9 @@ def install_archive(source, root, mode='none', skip_existing=False, hash_cache=N
                     validate_source(song.path, sandbox)
                 elif any(s.path != sandbox for s in songs):
                     raise ValueError('Archive mixes root and nested songs')
-                parent = root if mode == 'none' else root / component(getattr(song, mode))
+                parent = root if mode == 'none' else group_folder(root, component(getattr(song, mode)))
                 parent.mkdir(parents=True, exist_ok=True)
-                if not inside(parent.resolve(), root):
-                    raise ValueError('Install destination escapes library')
-                name = Path(source).stem if song.path == sandbox else song.path.name
+                name = archive_stem(source) if song.path == sandbox else song.path.name
                 target = unique_path(parent / component(name))
                 # copytree refuses collisions and leaves the archive available on failure.
                 copy_song(song.path, target)
@@ -612,12 +613,36 @@ class ArchivedSong:
     content_hash: str
 
 
+ARCHIVE_SUFFIX = r'\.(zip|rar|7z|sng|tar|tgz|tbz2?|txz|tar\.gz|tar\.bz2|tar\.xz)(?: \(\d+\))*$'
+
+
 def archive_format(path):
-    """Include numbered backups written by earlier versions (pack.zip (2))."""
-    match = re.search(r'\.(zip|rar|7z|sng|tar|tgz|tbz2?|txz|tar\.gz|tar\.bz2|tar\.xz)(?: \(\d+\))?$', str(path), re.I)
+    """Include numbered backups (pack.zip (2), and pack.tar.gz (2) (2) after renumbering)."""
+    match = re.search(ARCHIVE_SUFFIX, str(path), re.I)
     if not match: return None
     kind = match[1].lower()
     return kind if kind in ('zip', 'rar', '7z', 'sng') else 'tar'
+
+
+def archive_stem(name):
+    """Archive file name without its full extension or numbering: Song.tar.gz (2) -> Song."""
+    return re.sub(ARCHIVE_SUFFIX, '', Path(name).name, flags=re.I)
+
+
+def group_folder(root, group):
+    """root/group for organized songs; never a folder that is itself a song."""
+    parent = root / group
+    if not inside(parent.resolve(), root): raise ValueError('Destination escapes library')
+    current = root
+    for part in Path(group).parts:
+        current = current / part
+        if current.is_file():
+            raise ValueError(f'Organization folder "{current.relative_to(root)}" is a file; rename it first')
+        # Nesting a song inside another song's folder would make both unmovable.
+        if current.is_dir() and any(child.name.lower() in CHARTS and child.is_file() for child in current.iterdir()):
+            raise ValueError(f'Organization folder "{current.relative_to(root)}" is an existing song; '
+                             'rename that song folder or choose another organization')
+    return parent
 
 
 def song_content_hash(path):
@@ -690,8 +715,8 @@ class ArchiveCatalog:
                     validate_source(song.path, sandbox)
                 entries.append(ArchivedSong(archive, song.path.relative_to(sandbox).as_posix(),
                                             song, song_content_hash(song.path)))
-        except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, tarfile.TarError, RuntimeError) as exc:
-            errors.append(f'{archive.name}: {exc}')
+        except Exception as exc:  # e.g. EOFError/zlib.error/LZMAError from a truncated archive
+            errors.append(f'{archive.name}: {exc or type(exc).__name__}')
         return sandbox, entries, errors
 
     def scan(self, backup_root):
@@ -806,7 +831,9 @@ def activate_archived(entries, game_root, mode='none', scan_cache=None):
     """Install individual archived songs; existing byte-identical copies are skipped."""
     if mode not in ('none', 'artist', 'author', 'game'): raise ValueError('Unsupported organization mode')
     root = Path(game_root).expanduser().resolve(strict=True)
-    copies, errors = archived_installations(entries, root, scan_cache=scan_cache)
+    # A broken song elsewhere in the library must not block this; errors on matching songs still do.
+    songs, _ = scan_library(root, scan_cache)
+    copies, errors = archived_installations(entries, root, songs=songs)
     if errors: raise ValueError('Cannot safely determine installed state:\n' + '\n'.join(errors))
     installed = []
     try:
@@ -814,10 +841,9 @@ def activate_archived(entries, game_root, mode='none', scan_cache=None):
             if copies.get(entry.content_hash): continue
             if song_content_hash(entry.song.path) != entry.content_hash:
                 raise ValueError('Archive catalog changed. Rescan archives first.')
-            parent = root if mode == 'none' else root / component(getattr(entry.song, mode))
-            if not inside(parent.resolve(), root): raise ValueError('Destination escapes game library')
+            parent = root if mode == 'none' else group_folder(root, component(getattr(entry.song, mode)))
             parent.mkdir(parents=True, exist_ok=True)
-            name = entry.song.path.name if entry.relative_path != '.' or entry.song.path.is_file() else re.sub(r'\.(zip|rar|7z|sng)(?: \(\d+\))?$', '', entry.archive.name, flags=re.I)
+            name = entry.song.path.name if entry.relative_path != '.' or entry.song.path.is_file() else archive_stem(entry.archive)
             if entry.song.path.is_file(): name = re.sub(r'(?i)\.sng(?: \(\d+\))?$', '', name) + '.sng'
             target = unique_path(parent / component(name))
             copy_song(entry.song.path, target)
@@ -832,7 +858,9 @@ def activate_archived(entries, game_root, mode='none', scan_cache=None):
 def deactivate_archived(entries, game_root, trash, expected_paths=None, scan_cache=None):
     """Remove only current, full-content matches through a recoverable Trash callback."""
     root = Path(game_root).expanduser().resolve(strict=True)
-    copies, errors = archived_installations(entries, root, scan_cache=scan_cache)
+    # A broken song elsewhere in the library must not block this; errors on matching songs still do.
+    songs, _ = scan_library(root, scan_cache)
+    copies, errors = archived_installations(entries, root, songs=songs)
     if errors: raise ValueError('Cannot safely determine installed state:\n' + '\n'.join(errors))
     expected = {entry.content_hash for entry in entries}
     targets = [(path, fingerprint) for fingerprint in expected for path in copies.get(fingerprint, [])]
