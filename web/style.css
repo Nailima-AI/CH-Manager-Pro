@@ -73,3 +73,4 @@ dialog{background:linear-gradient(145deg,#1d2c43,#101928);border-radius:8px;bord
 @media(max-width:360px){.mobile-server{display:none}.overview>summary span{order:3;width:100%;margin-left:0}.more-pages{grid-template-columns:1fr}.header-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics p{letter-spacing:.5px}}
 
 .duplicate-help>summary{cursor:pointer;color:var(--accent);font-size:12px;min-height:44px;padding:12px 0}.duplicate-help>.muted{margin-top:0}.duplicate-help:not([open]){margin-top:6px}
+.show-more{display:flex;justify-content:center;padding:14px 0}

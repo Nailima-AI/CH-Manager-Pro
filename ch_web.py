@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import gzip
 import hashlib
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,8 +83,16 @@ class Service:
         self.upload_dir = self.data / 'incoming'; self.upload_dir.mkdir(exist_ok=True)
         self.trash_path = self.data / 'trash.json'
         self.trash = json.loads(self.trash_path.read_text()) if self.trash_path.exists() else {}
+        # quarantine() writes the record before moving. After an interruption between the
+        # two steps the original is still in place and no payload exists: forget the record.
+        stale = [key for key, item in self.trash.items()
+                 if not (self.trash_dir / key).exists() and (Path(item['original']).exists() or Path(item['original']).is_symlink())]
+        if stale:
+            for key in stale: self.trash.pop(key)
+            atomic_json(self.trash_path, self.trash)
         self.catalog = None
         self.hash_cache = ContentHashCache()
+        self.song_cache = {}  # Parsed installed songs, reused while their files are unchanged.
         self.songs, self.entries, self.archives = {}, {}, {}
         self.plans = {}
         self.snapshot = dict(songs=[], archived=[], archives=[], duplicates=[], errors=[], config=self.config, trash=[])
@@ -148,6 +158,10 @@ class Service:
                 return dict(base, partial=True)
             return {**self.snapshot, **base}
 
+    def queue_full(self):
+        with self.lock:
+            return len([j for j in self.jobs.values() if j['status'] in ('queued', 'running')]) >= 10
+
     def submit(self, action, payload):
         with self.lock:
             if len([j for j in self.jobs.values() if j['status'] in ('queued', 'running')]) >= 10:
@@ -183,8 +197,8 @@ class Service:
         except (KeyError, TypeError): raise ValueError('Selection is stale. Refresh the library first.')
 
     def refresh(self, archives=False):
-        root = Path(self.config['songs_dir'])
-        songs, errors = scan_library(root)
+        root = Path(self.config['songs_dir']).resolve()
+        songs, errors = scan_library(root, self.song_cache)
         backup = Path(self.config['backup_dir']).resolve()
         if archives or not self.catalog:
             if self.catalog and self.catalog.root == backup:
@@ -223,7 +237,7 @@ class Service:
                 fingerprint = content_hashes.get(song.path) or self.hash_cache.get(song.path)
             except (OSError,ValueError) as exc:
                 errors.append(f'{song.path}: {exc}'); fingerprint = ''
-            duplicate_items.append(dict(id=key, scope='installed', path=str(song.path.relative_to(root.resolve())),
+            duplicate_items.append(dict(id=key, scope='installed', path=str(song.path.relative_to(root)),
                 chart_hash=song.chart_hash, content_hash=fingerprint,
                 format='SNG' if song.path.is_file() else 'Folder', **describe(song)))
         for key, entry in self.entries.items():
@@ -237,9 +251,9 @@ class Service:
         with self.lock:
             self.revision += 1; self.data_revision += 1
             self.snapshot = dict(config=dict(self.config), errors=list(dict.fromkeys(errors)), duplicates=groups, duplicate_items=duplicate_items,
-                songs=[dict(id=key, path=str(s.path.relative_to(root.resolve())), **describe(s)) for key, s in self.songs.items()],
+                songs=[dict(id=key, path=str(s.path.relative_to(root)), **describe(s)) for key, s in self.songs.items()],
                 archived=[dict(id=key, archive=str(e.archive.relative_to(backup)), archive_path=e.relative_path,
-                    installed=len(copies.get(e.content_hash, [])), installed_paths=[str(p.relative_to(root.resolve())) for p in copies.get(e.content_hash, [])],
+                    installed=len(copies.get(e.content_hash, [])), installed_paths=[str(p.relative_to(root)) for p in copies.get(e.content_hash, [])],
                     **describe(e.song)) for key, e in self.entries.items()],
                 archives=[dict(id=key, path=str(path.relative_to(backup)), bytes=archive_sizes[path]) for key, path in self.archives.items()],
                 trash=[dict(id=key, original=item['original'], removed=item['removed']) for key, item in self.trash.items()])
@@ -264,7 +278,7 @@ class Service:
         # Validate even archive-only imports; this also rejects unsupported/unsafe archives.
         if install:
             installed = install_archive(source, self.config['songs_dir'], self.config['organization'],
-                                        skip_existing=True, hash_cache=self.hash_cache)
+                                        skip_existing=True, hash_cache=self.hash_cache, scan_cache=self.song_cache)
         else:
             from library_core import extract_archive
             import tempfile
@@ -280,6 +294,16 @@ class Service:
             raise OSError(f'{len(installed)} songs installed, but moving the original archive failed: {exc}') from exc
         return len(installed)
 
+    @contextlib.contextmanager
+    def refresh_after(self, archives=False):
+        """Refresh even when an operation fails part-way, so the UI matches the disk."""
+        try: yield
+        except Exception:
+            try: self.refresh(archives)
+            except Exception: pass  # Report the original failure, not the refresh.
+            raise
+        self.refresh(archives)
+
     def execute(self, action, payload):
         if action == 'refresh': return self.refresh(bool(payload.get('archives', True)))
         if action == 'settings':
@@ -290,53 +314,58 @@ class Service:
             return self.refresh(True)
         if action == 'install':
             entries = self.selected(payload.get('ids'), self.entries)
-            count = len(activate_archived(entries, self.config['songs_dir'], self.config['organization']))
-            self.refresh(); return f'Installed {count} song folders. Run Scan Songs in Clone Hero.'
+            with self.refresh_after():
+                count = len(activate_archived(entries, self.config['songs_dir'], self.config['organization'], self.song_cache))
+            return f'Installed {count} song folders. Run Scan Songs in Clone Hero.'
         if action in ('remove_archived', 'remove_songs', 'remove_archives'):
             if payload.get('confirm') is not True: raise ValueError('Removal needs confirmation')
-            if action == 'remove_archived':
-                entries = self.selected(payload.get('ids'), self.entries)
-                # Exact paths from the browser's reviewed snapshot are required.
-                expected = payload.get('expected_paths')
-                if not isinstance(expected, list): raise ValueError('Refresh and review matching paths first')
-                root = Path(self.config['songs_dir']).resolve()
-                paths = [root / p for p in expected]
-                count = deactivate_archived(entries, root, self.quarantine, paths)
-            elif action == 'remove_songs':
-                songs = self.selected(payload.get('ids'), self.songs)
-                root = Path(self.config['songs_dir']).resolve()
-                for song in songs: validate_source(song.path, root)
-                for song in songs: self.quarantine(song.path)
-                count = len(songs)
-            else:
-                paths = self.selected(payload.get('ids'), self.archives)
-                root = Path(self.config['backup_dir']).resolve()
-                for path in paths:
-                    if path.is_symlink() or not inside(path.resolve(), root) or not path.is_file():
-                        raise ValueError('Archive changed; refresh first')
-                for path in paths: self.quarantine(path)
-                count = len(paths)
-            self.refresh(action == 'remove_archives')
+            with self.refresh_after(action == 'remove_archives'):
+                if action == 'remove_archived':
+                    entries = self.selected(payload.get('ids'), self.entries)
+                    # Exact paths from the browser's reviewed snapshot are required.
+                    expected = payload.get('expected_paths')
+                    if not isinstance(expected, list): raise ValueError('Refresh and review matching paths first')
+                    root = Path(self.config['songs_dir']).resolve()
+                    paths = [root / p for p in expected]
+                    count = deactivate_archived(entries, root, self.quarantine, paths, self.song_cache)
+                elif action == 'remove_songs':
+                    songs = self.selected(payload.get('ids'), self.songs)
+                    root = Path(self.config['songs_dir']).resolve()
+                    for song in songs: validate_source(song.path, root)
+                    for song in songs: self.quarantine(song.path)
+                    count = len(songs)
+                else:
+                    paths = self.selected(payload.get('ids'), self.archives)
+                    root = Path(self.config['backup_dir']).resolve()
+                    for path in paths:
+                        if path.is_symlink() or not inside(path.resolve(), root) or not path.is_file():
+                            raise ValueError('Archive changed; refresh first')
+                    for path in paths: self.quarantine(path)
+                    count = len(paths)
             return f'Moved {count} items to app Trash. Original song archives are kept when removing game copies.'
         if action == 'restore':
-            keys = payload.get('ids')
+            keys = list(dict.fromkeys(payload.get('ids') or []))
             self.selected(keys, self.trash)
-            for key in dict.fromkeys(keys):
-                record = self.trash[key]; original = Path(record['original'])
+            originals = [Path(self.trash[key]['original']) for key in keys]
+            if len(set(originals)) != len(originals): raise ValueError('Two selected items restore to the same path; restore them one at a time')
+            # Check every item before moving any, so a conflict cannot leave a half-done restore.
+            for key, original in zip(keys, originals):
                 if original.exists() or original.is_symlink(): raise ValueError(f'Restore destination already exists: {original}')
-                target = self.trash_dir / key
-                if not target.exists(): raise ValueError('Trash payload is missing; inspect the data directory')
-                original.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(target), str(original)); self.trash.pop(key)
-                atomic_json(self.trash_path, self.trash)
-            self.refresh(True); return 'Restored selected files. Run Scan Songs in Clone Hero.'
+                if not (self.trash_dir / key).exists(): raise ValueError('Trash payload is missing; inspect the data directory')
+            with self.refresh_after(True):
+                for key, original in zip(keys, originals):
+                    original.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(self.trash_dir / key), str(original)); self.trash.pop(key)
+                    atomic_json(self.trash_path, self.trash)
+            return 'Restored selected files. Run Scan Songs in Clone Hero.'
         if action == 'apply_moves':
             key = payload.get('plan')
             plan = self.plans.pop(key, None)
             if not plan or time.time() - plan['created'] > 600: raise ValueError('Preview expired; create a new preview')
             if payload.get('confirm') is not True: raise ValueError('Review and confirm the move preview')
-            count = apply_moves(plan['moves'], self.config['songs_dir'])
-            self.refresh(); return f'Moved {count} songs. Run Scan Songs in Clone Hero.'
+            with self.refresh_after():
+                count = apply_moves(plan['moves'], self.config['songs_dir'])
+            return f'Moved {count} songs. Run Scan Songs in Clone Hero.'
         if action == 'watch_import':
             source = Path(payload['path'])
             if source.is_symlink() or source.parent.resolve() != Path(self.config['downloads_dir']).resolve():
@@ -377,16 +406,22 @@ class Service:
             if not config['monitoring'] or busy: continue
             try:
                 current = {}
-                for path in Path(config['downloads_dir']).iterdir():
+                for path in sorted(Path(config['downloads_dir']).iterdir()):
                     if path.is_symlink() or not path.is_file() or not archive_format(path): continue
-                    stat = path.stat(); stamp = (stat.st_size, stat.st_mtime_ns)
-                    current[str(path)] = stamp
-                    if stat.st_size and observed.get(str(path)) == stamp and attempted.get(str(path)) != stamp:
-                        attempted[str(path)] = stamp
+                    info = path.stat()
+                    # Inode and ctime change for every new download, even one copied with its
+                    # original size and mtime (cp -p, rsync -t, Syncthing).
+                    current[str(path)] = (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino)
+                attempted = {key: stamp for key, stamp in attempted.items() if key in current}
+                for key, stamp in current.items():
+                    if stamp[0] and observed.get(key) == stamp and attempted.get(key) != stamp:
+                        attempted[key] = stamp
+                        path = Path(key)
                         # Move only an observed file under the configured download folder.
                         with self.filesystem_lock:
                             if config['downloads_dir'] != self.config['downloads_dir'] or not self.config['monitoring']: break
-                            if (path.stat().st_size, path.stat().st_mtime_ns) != stamp: continue
+                            info = path.stat()
+                            if (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino) != stamp: continue
                             self.submit_watch(path)
                         break
                 observed = current
@@ -416,6 +451,13 @@ class Handler(BaseHTTPRequestHandler):
     def respond(self, status, content, kind='application/json', headers=None):
         if kind == 'application/json': content = json.dumps(content).encode()
         elif isinstance(content, str): content = content.encode()
+        headers = dict(headers or {})
+        # Full library snapshots are megabytes of repetitive JSON; phones on Wi-Fi or a
+        # reverse proxy benefit most. Small bodies are not worth the CPU.
+        if len(content) > 1400 and self.accepts_gzip():
+            content = gzip.compress(content, 5)
+            headers['Content-Encoding'] = 'gzip'
+        headers.setdefault('Vary', 'Accept-Encoding')
         self.send_response(status)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(content)))
@@ -423,10 +465,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-        for key, value in (headers or {}).items(): self.send_header(key, value)
+        for key, value in headers.items(): self.send_header(key, value)
         self.end_headers()
         try: self.wfile.write(content)
         except (BrokenPipeError, ConnectionResetError): pass
+
+    def accepts_gzip(self):
+        for coding in self.headers.get('Accept-Encoding', '').split(','):
+            name, _, params = coding.strip().partition(';')
+            if name.strip().lower() in ('gzip', '*'):
+                return params.replace(' ', '').lower() not in ('q=0', 'q=0.0', 'q=0.00', 'q=0.000')
+        return False
 
     def safe_origin(self):
         host = self.headers.get('Host', '')
@@ -474,7 +523,7 @@ class Handler(BaseHTTPRequestHandler):
                 data_since = None if data_since is None else int(data_since)
                 return self.respond(200, {**self.server.service.public_state(since, data_since), 'csrf':session['csrf'], 'version':VERSION})
             return self.respond(404, {'error':'Not found'})
-        except (OSError, ValueError) as exc: self.respond(400, {'error':str(exc)})
+        except (OSError, ValueError, TypeError) as exc: self.respond(400, {'error':str(exc)})
 
     def do_POST(self):
         try:
@@ -491,7 +540,7 @@ class Handler(BaseHTTPRequestHandler):
                     if len(attempts) >= 10: return self.respond(429, {'error':'Too many attempts; wait one minute'})
                     attempts.append(now); self.server.login_attempts[peer] = attempts
                 body = self.read_json()
-                if not secrets.compare_digest(str(body.get('token','')), self.server.token): return self.respond(401, {'error':'Invalid access token'})
+                if not secrets.compare_digest(str(body.get('token','')).encode(), self.server.token.encode()): return self.respond(401, {'error':'Invalid access token'})
                 sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
                 with self.server.session_lock:
                     self.server.sessions[sid] = dict(csrf=csrf, expires=time.time()+12*3600)
@@ -499,7 +548,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, {'ok':True}, headers={'Set-Cookie':f'ch_session={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200{secure}'})
             session = self.session()
             if not session: return self.respond(401, {'error':'Authentication required'})
-            if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''), session['csrf']): return self.respond(403, {'error':'Invalid CSRF token'})
+            if not secrets.compare_digest(self.headers.get('X-CSRF-Token','').encode('utf-8', 'surrogateescape'), session['csrf'].encode()): return self.respond(403, {'error':'Invalid CSRF token'})
             if path == '/api/logout':
                 with self.server.session_lock:
                     self.server.sessions = {k:v for k,v in self.server.sessions.items() if v is not session}
@@ -510,15 +559,24 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/action':
                 action = body.pop('action', '')
                 allowed = {'refresh','settings','install','remove_archived','remove_songs','remove_archives','restore','apply_moves','import'}
-                if action not in allowed: raise ValueError('Unknown operation')
+                if not isinstance(action, str) or action not in allowed: raise ValueError('Unknown operation')
                 return self.respond(202, {'job':self.server.service.submit(action, body)})
             return self.respond(404, {'error':'Not found'})
-        except (ValueError, OSError, json.JSONDecodeError) as exc: self.respond(400, {'error':str(exc)})
+        except (ValueError, TypeError, OSError, json.JSONDecodeError) as exc: self.respond(400, {'error':str(exc)})
         except Exception: self.respond(500, {'error':'Unexpected server error. Refresh and retry.'})
 
     def upload(self):
         length = int(self.headers.get('Content-Length','0'))
         if length <= 0 or length > self.server.max_upload: return self.respond(413, {'error':'Archive exceeds configured upload limit'})
+        # An upload that cannot be imported would be orphaned in incoming/.
+        if self.server.service.queue_full():
+            # Drain the body first; closing mid-upload shows up in browsers as a network error.
+            remaining = length
+            while remaining:
+                chunk = self.rfile.read(min(1024*1024, remaining))
+                if not chunk: break
+                remaining -= len(chunk)
+            return self.respond(429, {'error':'Operation queue is full; wait for current work to finish'})
         params = parse_qs(urlsplit(self.path).query)
         filename = params.get('name',[''])[0]
         if Path(filename).name != filename or '\\' in filename or not archive_format(filename): raise ValueError('Choose a ZIP, RAR, 7z, TAR (.tar/.tar.gz/.tgz/.tar.bz2/.tar.xz) or SNG file')

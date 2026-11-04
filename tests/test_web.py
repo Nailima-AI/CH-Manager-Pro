@@ -263,4 +263,92 @@ class WebTests(unittest.TestCase):
         finally: release.set()
 
 
+    def test_large_responses_are_gzipped_only_when_accepted(self):
+        import gzip
+        server=self.start_http();auth=self.login(server)
+        code,headers,plain=self.http(server,'GET','/app.js')
+        self.assertEqual(code,200);self.assertNotIn('Content-Encoding',headers);self.assertEqual(headers['Vary'],'Accept-Encoding')
+        code,headers,packed=self.http(server,'GET','/app.js',headers={'Accept-Encoding':'br, gzip;q=0.8'})
+        self.assertEqual(headers['Content-Encoding'],'gzip');self.assertEqual(gzip.decompress(packed),plain)
+        self.assertEqual(int(headers['Content-Length']),len(packed))
+        self.assertNotIn('Content-Encoding',self.http(server,'GET','/app.js',headers={'Accept-Encoding':'gzip;q=0'})[1])
+        code,headers,body=self.http(server,'GET','/api/state',headers={**auth,'Accept-Encoding':'gzip'})
+        state=json.loads(gzip.decompress(body) if headers.get('Content-Encoding')=='gzip' else body)
+        self.assertIn('songs',state)
+        # Tiny responses stay uncompressed.
+        self.assertNotIn('Content-Encoding',self.http(server,'GET','/api/state?since=%d'%state['revision'],headers={**auth,'Accept-Encoding':'gzip'})[1])
+
+    def test_cached_scan_never_hides_edited_installed_copy(self):
+        """The scan cache narrows candidates; installed state still uses fresh content hashes."""
+        entries=self.archived_fixture();self.service.execute('install',{'ids':[entries[0]['id']]})
+        song=Path(self.service.config['songs_dir'])/self.service.public_state()['songs'][0]['path']
+        self.assertTrue(self.service.song_cache)
+        # Audio edit: chart and song.ini stamps are unchanged, so the cached Song is reused.
+        (song/'song.ogg').write_bytes(b'edited audio')
+        self.service.execute('install',{'ids':[entries[0]['id']]})
+        self.assertEqual(len(self.service.public_state()['songs']),2)
+        edited=next(e for e in self.service.public_state()['archived'] if e['id']==entries[0]['id'])
+        self.assertEqual(len(edited['installed_paths']),1)
+        # Removal only takes the unedited copy and keeps the edited one.
+        self.service.execute('remove_archived',dict(ids=[edited['id']],confirm=True,expected_paths=edited['installed_paths']))
+        self.assertTrue((song/'song.ogg').is_file())
+        self.assertEqual(len(self.service.public_state()['songs']),1)
+
+    def test_damaged_backup_archive_is_reported_not_fatal(self):
+        import io, tarfile
+        data=io.BytesIO()
+        with tarfile.open(fileobj=data,mode='w:gz') as archive:
+            info=tarfile.TarInfo('Song/notes.mid');payload=__import__('os').urandom(50000);info.size=len(payload);archive.addfile(info,io.BytesIO(payload))
+        (Path(self.service.config['backup_dir'])/'Bad.tar.gz').write_bytes(data.getvalue()[:300])
+        self.upload_fixture();self.service.execute('import',{'upload':'Pack.zip','install':True})
+        state=self.service.public_state()
+        self.assertEqual(len(state['songs']),2);self.assertTrue(any('Bad.tar.gz' in e for e in state['errors']))
+
+    def test_unrelated_broken_song_does_not_block_install(self):
+        broken=Path(self.service.config['songs_dir'])/'Elsewhere';broken.mkdir()
+        (broken/'download.sng').write_bytes(b'SNGPKG\x01\x00\x00\x00 truncated')
+        entries=self.archived_fixture()
+        self.service.execute('install',{'ids':[entries[0]['id']]})
+        self.assertEqual(len(self.service.public_state()['songs']),1)
+
+    def test_failed_restore_moves_nothing_and_failed_remove_refreshes(self):
+        entries=self.archived_fixture();self.service.execute('install',{'ids':[e['id'] for e in entries]})
+        songs=self.service.public_state()['songs']
+        self.service.execute('remove_songs',{'ids':[s['id'] for s in songs],'confirm':True})
+        root=Path(self.service.config['songs_dir']);blocked=root/songs[1]['path'];blocked.mkdir()
+        trash=self.service.public_state()['trash']
+        with self.assertRaisesRegex(ValueError,'already exists'): self.service.execute('restore',{'ids':[t['id'] for t in trash]})
+        self.assertEqual(len(self.service.public_state()['trash']),2);self.assertFalse((root/songs[0]['path']).exists())
+        blocked.rmdir();self.service.execute('restore',{'ids':[t['id'] for t in trash]})
+        songs=self.service.public_state()['songs'];calls=[]
+        def failing_second(path):
+            calls.append(path)
+            if len(calls)==2: raise OSError('disk full')
+            return original(path)
+        original=self.service.quarantine
+        with patch.object(self.service,'quarantine',failing_second):
+            with self.assertRaisesRegex(OSError,'disk full'): self.service.execute('remove_songs',{'ids':[s['id'] for s in songs],'confirm':True})
+        # The first song really moved, and the snapshot says so.
+        self.assertEqual(len(self.service.public_state()['songs']),1);self.assertEqual(len(self.service.public_state()['trash']),1)
+
+    def test_trash_record_from_interrupted_move_is_dropped(self):
+        song=Path(self.service.config['songs_dir'])/'Kept';song.mkdir()
+        self.service.trash['abc']=dict(original=str(song),removed=0);self.service.trash_path.write_text(json.dumps(self.service.trash))
+        self.assertEqual(Service(self.service.data).trash,{})
+
+    def test_upload_is_refused_while_queue_is_full(self):
+        server=self.start_http();auth=self.login(server)
+        with patch.object(self.service,'queue_full',return_value=True):
+            code,_,body=self.http(server,'POST','/api/upload?name=Pack.zip',b'x'*5000,auth)
+        self.assertEqual(code,429);self.assertEqual(list(self.service.upload_dir.iterdir()),[])
+
+    def test_unicode_tokens_and_malformed_json_are_client_errors(self):
+        server=WebServer(('127.0.0.1',0), self.service, 'jeton-d’accès-très-secret-0123456789', max_upload=1024)
+        threading.Thread(target=server.serve_forever,daemon=True).start();self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        self.assertEqual(self.http(server,'POST','/api/login',{'token':'falsch-ä'*4})[0],401)
+        auth=self.login(server)
+        self.assertEqual(self.http(server,'POST','/api/action',{'action':'refresh'},{**auth,'X-CSRF-Token':'caf\xe9'.encode('latin-1').decode('latin-1')})[0],403)
+        self.assertEqual(self.http(server,'POST','/api/action',{'action':['refresh']},auth)[0],400)
+        self.assertEqual(self.http(server,'POST','/api/preview',{'ids':['x'],'mode':'custom','custom':123},auth)[0],400)
+
 if __name__ == '__main__': unittest.main()

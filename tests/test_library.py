@@ -34,6 +34,59 @@ class LibraryTests(unittest.TestCase):
             for key, value in entries.items(): archive.writestr(key, value)
         return path
 
+    def test_scan_cache_reuses_unchanged_songs_and_notices_changes(self):
+        from test_sng import sng_bytes
+        cache = {}
+        path = self.song('Track')
+        (self.root / 'One.sng').write_bytes(sng_bytes())
+        first, errors = scan_library(self.root, cache)
+        self.assertEqual(errors, [])
+        with patch('library_core.read_song') as read_song, patch('library_core.read_sng_song') as read_sng:
+            again, _ = scan_library(self.root, cache)
+            read_song.assert_not_called(); read_sng.assert_not_called()
+        self.assertEqual({s.path: s for s in again}, {s.path: s for s in first})
+        # Edited metadata, a new chart file, a moved folder and a deleted song are all noticed.
+        (path / 'song.ini').write_text('[song]\nname=Edited\nartist=Artist\n')
+        self.assertIn('Edited', [s.name for s in scan_library(self.root, cache)[0]])
+        (path / 'notes.chart').write_text('[Song]\n{\n}\n')
+        chart = next(s for s in scan_library(self.root, cache)[0] if s.path == path).chart_hash
+        self.assertNotEqual(chart, next(s for s in first if s.path == path).chart_hash)
+        moved = self.root / 'Folder' / 'Track'; moved.parent.mkdir(); path.rename(moved)
+        songs, _ = scan_library(self.root, cache)
+        self.assertIn(moved, [s.path for s in songs]); self.assertNotIn(path, [s.path for s in songs])
+        (self.root / 'One.sng').unlink()
+        songs, _ = scan_library(self.root, cache)
+        self.assertEqual([s.path for s in songs], [moved])
+        self.assertEqual(len(cache), 1)
+
+    def test_organizing_never_nests_inside_an_existing_song(self):
+        from library_core import ArchivedSong, activate_archived, song_content_hash
+        self.song('Band', meta='name=Band\nartist=Someone')  # a song folder named like an artist
+        other = self.song('Incoming/Track', meta='name=Track\nartist=Band')
+        song = next(s for s in self.scan() if s.path == other)
+        with self.assertRaisesRegex(ValueError, 'existing song'):
+            plan_moves([song], self.root, 'artist')
+        with self.assertRaisesRegex(ValueError, 'existing song'):
+            install_archive(self.archive({'T/notes.mid': b'new', 'T/song.ini': '[song]\nname=T\nartist=Band'}), self.root, 'artist')
+        source = self.song('Src/T', notes=b'other', meta='name=T\nartist=Band', root=Path(self.temp.name))
+        entry = ArchivedSong(Path('a.zip'), 'T', scan_library(source.parent)[0][0], song_content_hash(source))
+        with self.assertRaisesRegex(ValueError, 'existing song'):
+            activate_archived([entry], self.root, 'artist')
+        self.assertEqual(sorted(p.name for p in (self.root / 'Band').iterdir()), ['notes.mid', 'song.ini'])
+
+    def test_archive_names_with_repeated_numbering(self):
+        from library_core import archive_format, archive_stem
+        self.assertEqual(archive_format('Pack.tar.gz (2) (2)'), 'tar')
+        for name, stem in [('Song.tar.gz', 'Song'), ('Song.tgz (3)', 'Song'), ('Song.tar.xz', 'Song'),
+                           ('Song (2).zip', 'Song (2)'), ('Song.zip (2)', 'Song'), ('Live (1999).7z', 'Live (1999)')]:
+            self.assertEqual(archive_stem(name), stem)
+        import io, tarfile
+        pack = Path(self.temp.name) / 'Root.tar.gz'
+        with tarfile.open(pack, 'w:gz') as archive:
+            for name, data in (('notes.mid', b'root'), ('song.ini', b'[song]\nname=R')):
+                info = tarfile.TarInfo(name); info.size = len(data); archive.addfile(info, io.BytesIO(data))
+        self.assertEqual(install_archive(pack, self.root)[0].name, 'Root')  # not "Root.tar"
+
     def test_nested_metadata(self):
         self.song('Pack/Track', meta='name=100% Song\nartist=Band\nfrets=<color=red>Mapper</color>\nicon=rb2')
         song, = self.scan()
