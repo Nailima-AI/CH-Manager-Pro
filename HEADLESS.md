@@ -45,7 +45,7 @@ Use **Settings** to set the server's game-song, archive, and download-watch path
 | Settings | Game/archive/watch folders, automatic folder organization, download monitoring, and whether new imports install automatically |
 | Activity | Background operation status and errors; the most recent 25 operations are shown (in-memory history) |
 
-**There is no Clone Hero process detection.** Imports and monitoring never depend on the game being open. Turn off **Install new imports automatically** to build an archive first and select songs later. The watch folder must receive completed archives; it checks unchanged size/mtime across polling intervals. Failed monitored files retry after size/mtime changes or a server restart. Imports and filesystem mutations use a single worker queue. Long scans do not prevent the browser from showing current progress.
+**There is no Clone Hero process detection.** Imports and monitoring never depend on the game being open. Turn off **Install new imports automatically** to build an archive first and select songs later. The watch folder must receive completed archives; it waits until a file's size, modification/change time and inode are unchanged across polling intervals, so a re-download with the same name is picked up too. Failed monitored files retry after any of those change or after a server restart. Imports and filesystem mutations use a single worker queue. Long scans do not prevent the browser from showing current progress.
 
 ZIP, TAR (.tar, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz) and SNG work with Python alone; TAR members that are links, devices or escape the folder are refused. RAR/7z need `7z` or `7zz`; some RAR codecs need an extra distribution package. On Ubuntu 24.04:
 

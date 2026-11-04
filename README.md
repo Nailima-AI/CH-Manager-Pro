@@ -1,106 +1,147 @@
-# CH Manager Pro — Headless Web
+# 🎸 CH Manager Pro — Server Library
 
-The `main` branch runs on a headless server and provides a browser interface for the full library workflow. Start with `python3 ch_web.py`; it does not require GTK or a display. The previous GTK desktop version is kept on the [`desktop`](https://github.com/Nailima-AI/CH-Manager-Pro/tree/desktop) branch.
+A self-hosted web app for managing a [Clone Hero](https://clonehero.net/) song library from a home server, NAS or always-on PC. Drop in chart packs, keep every original download as an archive, and choose which songs are actually in the game, from any browser, including your phone.
 
-**[Setup, Docker, systemd, networking, and web-interface guide → HEADLESS.md](HEADLESS.md)**
+![Archived songs view](docs/screenshot.png)
 
-Browse installed and archived songs, selectively install/remove, organize folders, review duplicates and author/game evidence, upload archives/SNG songs, monitor a download folder, and restore removed files from app Trash. There is **no Clone Hero process detection** in the web version.
+Clone Hero itself runs elsewhere (a gaming PC or Steam Deck) and plays from the song folder this server manages, shared over SMB/NFS. The app only manages files; it never needs the game to be open.
 
-The desktop reference below describes the shared library backend; use the headless guide above for installation and browser controls.
+> **Looking for the desktop app?** The original GTK4 desktop version for Linux/Steam Deck is kept on the [`desktop`](https://github.com/Nailima-AI/CH-Manager-Pro/tree/desktop) branch.
 
----
+## Features
 
-# 🎸 CH Manager Pro — Library Management Fork
+- **Import packs**: upload ZIP, RAR, 7z, TAR (`.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`) or native `.sng` files from the browser, or let the app watch a downloads folder.
+- **Archive first, install later**: originals are kept in an archive folder. Browse the songs inside every pack and install only the ones you want; remove them from the game later without losing the download.
+- **No duplicate installs**: a song whose full content (charts, audio, metadata) is already in the game is never copied again, even from a re-downloaded pack.
+- **Duplicate review**: compare identical copies, same chart with different audio/metadata, and same title/artist with different charts, across the game folder and your archives. Nothing is deleted automatically.
+- **Organize**: move songs into artist, charter, source-game or custom folders, after reviewing a full preview of every move.
+- **Charter and source-game detection** with evidence labels (see [Metadata detection](#metadata-detection)).
+- **Recoverable Trash**: removed songs and archives go to the app's Trash and can be restored. There is no permanent-delete button.
+- **Phone-friendly**: bottom navigation, large touch targets and a layout tested from 320 px phones to desktop widths.
 
-A Linux/Steam Deck GTK4 application that watches Downloads, extracts Clone Hero charts, and backs up imported archives.
+## Quick start
 
-Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-Pro), under the original MIT license. This fork's changes are AI-generated and AI-assisted code; review and test them before using them with your main library.
+### Docker Compose (recommended)
 
-![Splash screen](icons/splash.png)
+```bash
+git clone https://github.com/Nailima-AI/CH-Manager-Pro.git
+```
 
-## Archived song library (5.2)
+```bash
+cd CH-Manager-Pro && docker compose up -d --build
+```
 
-Open **Library → Browse archived songs** to browse individual songs inside downloaded ZIP, RAR, 7z and TAR (.tar, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz) backups, including multi-song packs and nested archive folders. Search by song, artist, charter, game, or archive name. Filter to **All archived songs**, **In game folder**, or **Not in game folder**.
+```bash
+docker compose exec ch-manager cat /data/access-token
+```
 
-- Select songs and use **Install selected** to copy only those songs into the configured chart install folder. The new-import organization setting also controls their destination folders. Identical installed copies are skipped.
-- Use **Remove selected from game…** to review and send matching game-folder copies to desktop Trash. Original archives stay untouched, so you can install the songs again later. All identical copies listed for the selected archived songs are included in removal.
-- Use **Refresh game state** after moving/editing songs outside the app, or **Rescan archives** after adding/removing backup archives. The window displays the archive and game paths it is managing; reopen it after changing either setting.
-- Run **Scan Songs** in Clone Hero after changing what is installed.
+Open `http://127.0.0.1:8899` on the server and sign in with that token. The image includes 7-Zip with the RAR codec.
 
-Installed-state matching checks the full song contents (notes, audio, metadata, and other files), independent of folder location or name. Different versions remain separate. An edited song may appear **Not in game folder** even if it has the same title or chart bytes; it will not be removed as a match. This intentionally favors preserving modified songs.
+By default all data, including songs and archives, lives in a Docker volume. To use real folders on your server, uncomment the example mounts in [`compose.yaml`](compose.yaml) and enter the container paths (`/songs`, `/archives`, `/downloads`) in **Settings**. The container runs as UID 1000, so those folders must be writable by that user. An NFS volume example is included too.
 
-Archives are read locally into a temporary catalog, cleaned up when the window closes. The first scan reads/decompresses archives and compares audio files, so large collections need time and temporary disk space. RAR/7z still require the relevant 7z codecs. Unsupported or unreadable archives are listed as errors. Existing backups do not need to be re-imported. **Manage Archives** remains the separate archive-file deletion tool.
+### Plain Python
 
-## New in this fork (5.1)
+Python 3.10+ with **no third-party packages**. Install `7zip` (or `p7zip`) for RAR and 7z support:
 
-- **Change chart installation folder** in Library → Chart install folder, including an SD card or another mounted drive. The setting survives restarts and updates. Existing configurations default to `~/.clonehero/Songs`.
-- **Browse nested libraries** with title, artist, chart author, source game, and folder details. Search all those fields and sort by any of them.
-- **Organize songs** into artist, chart author, source-game, or custom folders such as `Favorites/Party`. Select songs in Manage Songs, choose a mode, then review the complete move preview before applying. New imports can also be organized automatically.
-- **Find duplicates** using SHA-256 of chart files and normalized title/artist matches. The duplicate filter displays group numbers and paths. Identical chart bytes can still have different audio/metadata; title/artist matches may be different arrangements, difficulties, or charters. Nothing is automatically deleted or skipped.
-- **Inspect chart author and likely source game**, with evidence labels. Author means the charter, separate from the musical artist. Unknown values remain `Unknown`.
-- **Trash selected songs** after confirmation, leaving archive backups intact. Trash failures are reported; there is no permanent-delete fallback.
+```bash
+sudo apt install 7zip
+```
 
-Changing the install folder selects the library for future imports and management; it does **not** migrate your old library. Add the selected folder in Clone Hero's song-path settings and run **Scan Songs** after importing, moving, or removing songs. Moving songs can change their setlist paths.
+```bash
+python3 ch_web.py
+```
 
-Folder collisions receive a numbered suffix; folders are never merged or overwritten. Operations are serialized within the app. Do not run another organizer against the same library at the same time. Move plans are checked again before application. Symlink folders, a chart directly at the library root, and nested song-inside-song layouts require manual review. Moves use filesystem renames and cannot span filesystems; a failed move attempts rollback.
+The sign-in token is created on first start:
 
-## How metadata detection works
+```bash
+cat ~/.local/share/ch_manager_web/access-token
+```
+
+A sample systemd unit is in [`deploy/ch-manager-web.service`](deploy/ch-manager-web.service).
+
+### Reaching it from another device
+
+The server listens on localhost only. From your computer, use an SSH tunnel and open `http://127.0.0.1:8899`:
+
+```bash
+ssh -L 8899:127.0.0.1:8899 user@your-server
+```
+
+For LAN or reverse-proxy access, see [Networking](HEADLESS.md#lan-or-reverse-proxy-access). Don't expose the app directly to the internet.
+
+## Playing the songs in Clone Hero
+
+1. Share the server's song folder with the gaming device (SMB/NFS) and mount it there.
+2. Add the mounted folder to Clone Hero's song folders in its settings.
+3. After installing, moving or removing songs in the web app, run **Scan Songs** in Clone Hero.
+
+The archive folder can stay on the server; Clone Hero never needs to see it.
+
+## Configuration
+
+Folders, folder organization, download watching and whether new imports install automatically are set in the app's **Settings** page. Server options are command-line flags:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `--data-dir` | `~/.local/share/ch_manager_web` (or `$CH_WEB_DATA`) | Settings, token, Trash, uploads |
+| `--host` | `127.0.0.1` | Listen address; use `0.0.0.0` only with `--allowed-hosts` |
+| `--port` | `8899` | Listen port |
+| `--allowed-hosts` | `localhost,127.0.0.1,[::1]` | Hostnames the browser may use |
+| `--secure-cookie` | off | Set when serving over HTTPS through a proxy |
+| `--max-upload-mib` | `2048` | Largest accepted upload per file |
+| `CH_WEB_TOKEN` env var | generated | Use your own sign-in token (24+ characters) |
+
+## Resource use
+
+Measured with 3,000 installed songs and 20 archives holding 500 more:
+
+| | CPU | Memory |
+| --- | --- | --- |
+| Idle, watch folder on | ~0.02% of one core | ~50 MB |
+| Page open | ~0.1% of one core | ~50 MB |
+| Startup scan | ~6 s of one core, once | ~50 MB |
+| Refresh after a change | ~0.5 s | ~55 MB |
+
+Library work runs one job at a time, so it uses at most about one core (plus a `7z` process while unpacking RAR/7z files). **Plan for temporary disk space:** to browse inside your archives, the app keeps them unpacked in the temp directory while it runs, which takes at least as much space as the archives themselves.
+
+## Metadata detection
 
 | Field | Sources, in priority order |
 | --- | --- |
-| Title / musical artist | `song.ini` `[song]` fields, then `notes.chart` `[Song]` fields |
-| Chart author | `charter`, `frets`, then `author` |
-| Source game | Explicit `game`, `source_game`, or `source` fields (unverified); known Guitar Hero/Rock Band `icon` values; an exact recognizable parent pack-folder name |
+| Title / artist | `song.ini` `[song]` fields, then `notes.chart` `[Song]` fields |
+| Charter | `charter`, `frets`, then `author` |
+| Source game | `game`, `source_game` or `source` fields (unverified); known Guitar Hero/Rock Band `icon` values; a recognizable parent pack-folder name |
 
-Icon and folder matches are labeled **Likely**, not verified provenance. A custom chart can reuse an official-game icon. Generic source fields may name a pack rather than a game. This is local metadata detection, not audio recognition, an online catalog lookup, or proof that a chart came from an official game. It cannot identify arbitrary videogame music when that information is missing.
+Icon and folder matches are labeled **Likely**: a custom chart can reuse an official game's icon. This is local metadata only; there is no audio recognition or online lookup. Songs are folders containing `notes.chart`, `notes.mid` or `notes.midi`, or native SNGPKG v1 `.sng` files.
 
-Scans recognize directories containing `notes.chart`, `notes.mid`, or `notes.midi`, case-insensitively. `song.ini` overrides text-chart metadata. MIDI-only charts need `song.ini` for descriptive metadata. The web version also recognizes native SNGPKG v1 `.sng` files, preserving their packed contents. See HEADLESS.md for duplicate review and SNG details. Hash matching compares the complete set of note-file bytes; equivalent charts encoded differently need manual review. Scan errors and malformed metadata are reported.
+## Limitations
 
-## Installation / upgrade
+- No Clone Hero process detection, and no downloading from links (Google Drive etc.): upload files or use the watch folder.
+- One user, one token sign-in. No accounts or OIDC; put it behind a reverse proxy with its own login if you need that.
+- Removing a single song from inside a multi-song pack isn't supported; packs are never rewritten.
+- Re-encoded audio or MIDI isn't recognized as identical; those show up as possible duplicates for manual review.
+- Extraction isn't a malware sandbox: links, path traversal and executables are refused, but only import packs you trust.
+- Tested on x86-64 Linux. Other CPU architectures and actual Clone Hero playback from a network share haven't been verified here.
 
-Download this fork's **Code → Download ZIP**, or clone it. Keep `ch_manager_pro.py`, `library_core.py`, the installer, and `icons/` together. Use Python 3.10+, PyGObject, GTK **4.10+**, libadwaita **1.4+**, and Zenity. ZIP and TAR extraction use Python; RAR/7z extraction requires `7z` or `7zz` with support for the archive codec. Your distribution may package the RAR codec separately.
+## More documentation
 
-On Ubuntu 24.04, the GUI packages are:
+[HEADLESS.md](HEADLESS.md) is the full guide: every page of the web interface, reverse proxies, Docker and systemd details, how duplicate review and SNG files work, and how refresh and recovery behave.
 
-```sh
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 zenity 7zip
-```
+## Development
 
-On SteamOS, check the installed GTK/PyGObject/Zenity and 7z availability first; use packages appropriate to your SteamOS version. The installer does not disable the read-only OS or install system packages.
-
-```sh
-chmod +x ch_manager_pro_installer_v5.sh
-./ch_manager_pro_installer_v5.sh
-```
-
-Choose **AGGIORNA** to keep your configuration. **PULISCI** resets app settings. Installed application files and `config.ini` live in `~/.local/share/ch_manager/`; the desktop launcher appears as CH Manager Pro. `SongsDir` and `Organization` are added alongside the existing backup settings. New controls are currently English; the original English/Italian controls remain.
-
-To run directly from source:
-
-```sh
-python3 ch_manager_pro.py
-```
-
-Archive imports retain each song's files and back up the original archive. Name collisions also get numbered backup names. Executable files, traversal paths, and links are rejected. Invalid archives remain at their original location and errors are displayed; monitoring retries a failed file only if its size/mtime changes or monitoring restarts. Extraction is not a malware sandbox: only import archives you trust.
-
-## Verification
-
-The backend has no GUI or network dependencies:
-
-```sh
+```bash
 python3 -m unittest discover -s tests -v
-bash -n ch_manager_pro_installer_v5.sh
-python3 -m py_compile ch_manager_pro.py library_core.py
 ```
 
-The tests cover metadata precedence, missing/malformed metadata, exact and possible duplicates, recursive scanning, collision handling, custom paths, stale previews, rollback, symlinks, unsafe archives, root/nested ZIP imports, and 7z imports when 7z is installed. Optional GUI smoke tests need the GTK dependencies and a display:
+The tests run a real HTTP server against temporary folders. Tests needing `7z`, `rar` or GTK skip themselves when those aren't installed. CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) also builds the Docker image and runs an end-to-end smoke test in it, and runs Playwright layout checks at five screen sizes.
 
-```sh
-xvfb-run -a /usr/bin/python3 -m unittest discover -s tests -p 'test_gui.py' -v
-```
+| File | What it is |
+| --- | --- |
+| `ch_web.py` | Web server, sign-in and the background job queue |
+| `library_core.py` | Scanning, archive extraction, hashing, install/move/remove (shared with the desktop app) |
+| `web/` | The browser interface: plain HTML, CSS and JavaScript, no build step |
+| `ch_manager_pro.py`, installer | The legacy GTK desktop app; see the `desktop` branch |
 
-Before organizing your main library, try a copy of a few charts, switch the install folder to that copy, import an archive, review duplicate groups, and preview/apply a folder move. Confirm the results in Clone Hero. Actual Steam Deck/Clone Hero validation is still needed.
+## License and credits
 
-## License
-
-[MIT](LICENSE). Original copyright and upstream attribution are retained.
+[MIT](LICENSE). Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-Pro); original copyright and attribution are retained. This fork's changes are AI-generated and AI-assisted code: review them, and back up your song and archive folders before pointing the app at your main library.
