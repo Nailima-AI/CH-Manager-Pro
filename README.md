@@ -1,10 +1,10 @@
-# CH Manager Pro — Headless Web Branch
+# CH Manager Pro — Headless Web
 
-This branch runs on a headless server and provides a browser interface for the full library workflow. Start with `python3 ch_web.py`; it does not require GTK or a display. The desktop version remains on `main`.
+The `main` branch runs on a headless server and provides a browser interface for the full library workflow. Start with `python3 ch_web.py`; it does not require GTK or a display. The previous GTK desktop version is kept on the [`desktop`](https://github.com/Nailima-AI/CH-Manager-Pro/tree/desktop) branch.
 
 **[Setup, Docker, systemd, networking, and web-interface guide → HEADLESS.md](HEADLESS.md)**
 
-Browse installed and archived songs, selectively install/remove, organize folders, review duplicates and author/game evidence, upload archives/SNG songs, monitor a download folder, and restore removed files from app Trash. There is **no Clone Hero process detection** on this branch.
+Browse installed and archived songs, selectively install/remove, organize folders, review duplicates and author/game evidence, upload archives/SNG songs, monitor a download folder, and restore removed files from app Trash. There is **no Clone Hero process detection** in the web version.
 
 The desktop reference below describes the shared library backend; use the headless guide above for installation and browser controls.
 
@@ -54,7 +54,7 @@ Folder collisions receive a numbered suffix; folders are never merged or overwri
 
 Icon and folder matches are labeled **Likely**, not verified provenance. A custom chart can reuse an official-game icon. Generic source fields may name a pack rather than a game. This is local metadata detection, not audio recognition, an online catalog lookup, or proof that a chart came from an official game. It cannot identify arbitrary videogame music when that information is missing.
 
-Scans recognize directories containing `notes.chart`, `notes.mid`, or `notes.midi`, case-insensitively. `song.ini` overrides text-chart metadata. MIDI-only charts need `song.ini` for descriptive metadata. This branch also recognizes native SNGPKG v1 `.sng` files, preserving their packed contents. See HEADLESS.md for duplicate review and SNG details. Hash matching compares the complete set of note-file bytes; equivalent charts encoded differently need manual review. Scan errors and malformed metadata are reported.
+Scans recognize directories containing `notes.chart`, `notes.mid`, or `notes.midi`, case-insensitively. `song.ini` overrides text-chart metadata. MIDI-only charts need `song.ini` for descriptive metadata. The web version also recognizes native SNGPKG v1 `.sng` files, preserving their packed contents. See HEADLESS.md for duplicate review and SNG details. Hash matching compares the complete set of note-file bytes; equivalent charts encoded differently need manual review. Scan errors and malformed metadata are reported.
 
 ## Installation / upgrade
 
