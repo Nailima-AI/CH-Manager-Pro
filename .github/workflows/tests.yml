@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Install rar to build a test archive
+        run: sudo apt-get update && sudo apt-get install -y rar
       - name: Validate Compose configuration
         run: docker compose config --quiet
       - name: Build image
@@ -154,6 +156,19 @@ jobs:
           action('restore', ids=[state()['trash'][0]['id']])
           assert any(s['name'] == 'SNG Song' for s in state()['songs'])
           print('PASS: native SNG upload, archive duplicate review, selective installation, trash and restore in Docker')
+          # RAR goes through 7-Zip's listing check and the p7zip-rar codec in the image.
+          import pathlib, tempfile
+          with tempfile.TemporaryDirectory() as folder:
+              song = pathlib.Path(folder, 'RarSong'); song.mkdir()
+              (song / 'song.ini').write_text('[song]\nname=RAR Song\nartist=Band\n')
+              (song / 'notes.mid').write_bytes(b'rar-chart')
+              subprocess.check_call(['rar', 'a', '-inul', 'pack.rar', 'RarSong'], cwd=folder)
+              upload = json.loads(request('/api/upload?name=Pack.rar', raw=pathlib.Path(folder, 'pack.rar').read_bytes(), expected=201)[1])['upload']
+          action('import', upload=upload, install=True)
+          current = state()
+          assert any(s['name'] == 'RAR Song' for s in current['songs']), current['errors']
+          assert not current['errors'], current['errors']
+          print('PASS: RAR upload, archive listing check and installation in Docker')
           PY
       - name: Container diagnostics
         if: always()

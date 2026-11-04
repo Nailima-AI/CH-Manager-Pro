@@ -34,6 +34,31 @@ class LibraryTests(unittest.TestCase):
             for key, value in entries.items(): archive.writestr(key, value)
         return path
 
+    def test_scan_cache_reuses_unchanged_songs_and_notices_changes(self):
+        from test_sng import sng_bytes
+        cache = {}
+        path = self.song('Track')
+        (self.root / 'One.sng').write_bytes(sng_bytes())
+        first, errors = scan_library(self.root, cache)
+        self.assertEqual(errors, [])
+        with patch('library_core.read_song') as read_song, patch('library_core.read_sng_song') as read_sng:
+            again, _ = scan_library(self.root, cache)
+            read_song.assert_not_called(); read_sng.assert_not_called()
+        self.assertEqual({s.path: s for s in again}, {s.path: s for s in first})
+        # Edited metadata, a new chart file, a moved folder and a deleted song are all noticed.
+        (path / 'song.ini').write_text('[song]\nname=Edited\nartist=Artist\n')
+        self.assertIn('Edited', [s.name for s in scan_library(self.root, cache)[0]])
+        (path / 'notes.chart').write_text('[Song]\n{\n}\n')
+        chart = next(s for s in scan_library(self.root, cache)[0] if s.path == path).chart_hash
+        self.assertNotEqual(chart, next(s for s in first if s.path == path).chart_hash)
+        moved = self.root / 'Folder' / 'Track'; moved.parent.mkdir(); path.rename(moved)
+        songs, _ = scan_library(self.root, cache)
+        self.assertIn(moved, [s.path for s in songs]); self.assertNotIn(path, [s.path for s in songs])
+        (self.root / 'One.sng').unlink()
+        songs, _ = scan_library(self.root, cache)
+        self.assertEqual([s.path for s in songs], [moved])
+        self.assertEqual(len(cache), 1)
+
     def test_nested_metadata(self):
         self.song('Pack/Track', meta='name=100% Song\nartist=Band\nfrets=<color=red>Mapper</color>\nicon=rb2')
         song, = self.scan()

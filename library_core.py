@@ -257,26 +257,49 @@ def read_song(path, root):
                 game, evidence, fingerprint, tuple(warnings))
 
 
-def scan_library(root):
-    """Return recursive songs and per-path errors; never follow symlink directories."""
+METADATA_FILES = CHARTS | {'song.ini'}
+
+
+def scan_library(root, cache=None):
+    """Return recursive songs and per-path errors; never follow symlink directories.
+
+    With a cache dict, songs whose metadata/chart files have unchanged stat stamps
+    (size, mtime, ctime, inode) are reused instead of re-read and re-hashed. The
+    dict is rewritten to hold only songs found by this scan.
+    """
     root = Path(root).expanduser().resolve(strict=True)
-    songs, errors = [], []
+    songs, errors, seen = [], [], {}
     def walk_error(exc):
         errors.append(str(exc))
+    def cached(key, stamp, read):
+        previous = cache.get(key) if cache is not None else None
+        song = previous[1] if previous and previous[0] == stamp else read()
+        seen[key] = (stamp, song)
+        return song
     for folder, dirs, names in os.walk(root, followlinks=False, onerror=walk_error):
+        dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(folder, d)))
+        regular = {}
+        for name in names:
+            try: info = os.lstat(os.path.join(folder, name))
+            except OSError as exc: errors.append(f'{os.path.join(folder, name)}: {exc}'); continue
+            if not stat.S_ISLNK(info.st_mode): regular[name] = info
         path = Path(folder)
-        dirs[:] = sorted(d for d in dirs if not (path / d).is_symlink())
-        lowered = {n.lower() for n in names if not (path / n).is_symlink()}
-        for name in sorted(names):
-            child = path / name
-            if not child.is_symlink() and archive_format(child) == 'sng':
-                try: songs.append(read_sng_song(child, root))
+        for name in sorted(regular):
+            if archive_format(name) == 'sng':
+                child = path / name
+                info = regular[name]
+                stamp = (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino)
+                try: songs.append(cached((str(root), str(child)), stamp, lambda: read_sng_song(child, root)))
                 except (OSError, ValueError) as exc: errors.append(f'{child}: {exc}')
-        if CHARTS & lowered:
+        if CHARTS & {n.lower() for n in regular}:
+            stamp = tuple(sorted((n, (i.st_size, i.st_mtime_ns, i.st_ctime_ns, i.st_ino, i.st_mode))
+                                 for n, i in regular.items() if n.lower() in METADATA_FILES))
             try:
-                songs.append(read_song(path, root))
+                songs.append(cached((str(root), folder), stamp, lambda: read_song(path, root)))
             except (OSError, ValueError) as exc:
                 errors.append(f'{path}: {exc}')
+    if cache is not None:
+        cache.clear(); cache.update(seen)
     return songs, errors
 
 
@@ -712,15 +735,22 @@ def song_signature(path):
     """Stat-only signature of every file in a song; raises on symlinks like song_content_hash."""
     path = Path(path)
     if path.is_file(): return (('', file_stamp(path)),)
-    signature = []
-    for folder, dirs, files in os.walk(path, followlinks=False):
+    signature, base = [], str(path)
+    prefix = len(base) + 1
+    # Plain strings and one lstat per file: this runs for every installed song on each refresh.
+    for folder, dirs, files in os.walk(base, followlinks=False):
         dirs.sort()
-        for name in dirs + files:
-            if (Path(folder) / name).is_symlink():
+        for name in dirs:
+            if os.path.islink(os.path.join(folder, name)):
                 raise ValueError(f'Cannot fingerprint symbolic link: {name}')
-        for name in sorted(files):
-            child = Path(folder) / name
-            signature.append((child.relative_to(path).as_posix(), file_stamp(child)))
+        stamps = []
+        for name in files:
+            info = os.lstat(os.path.join(folder, name))
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError(f'Cannot fingerprint symbolic link: {name}')
+            stamps.append((name, (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino)))
+        for name, stamp in sorted(stamps):
+            signature.append((os.path.join(folder, name)[prefix:].replace(os.sep, '/'), stamp))
     return tuple(signature)
 
 

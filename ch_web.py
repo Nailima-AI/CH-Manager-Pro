@@ -83,6 +83,7 @@ class Service:
         self.trash = json.loads(self.trash_path.read_text()) if self.trash_path.exists() else {}
         self.catalog = None
         self.hash_cache = ContentHashCache()
+        self.song_cache = {}  # Parsed installed songs, reused while their files are unchanged.
         self.songs, self.entries, self.archives = {}, {}, {}
         self.plans = {}
         self.snapshot = dict(songs=[], archived=[], archives=[], duplicates=[], errors=[], config=self.config, trash=[])
@@ -183,8 +184,8 @@ class Service:
         except (KeyError, TypeError): raise ValueError('Selection is stale. Refresh the library first.')
 
     def refresh(self, archives=False):
-        root = Path(self.config['songs_dir'])
-        songs, errors = scan_library(root)
+        root = Path(self.config['songs_dir']).resolve()
+        songs, errors = scan_library(root, self.song_cache)
         backup = Path(self.config['backup_dir']).resolve()
         if archives or not self.catalog:
             if self.catalog and self.catalog.root == backup:
@@ -223,7 +224,7 @@ class Service:
                 fingerprint = content_hashes.get(song.path) or self.hash_cache.get(song.path)
             except (OSError,ValueError) as exc:
                 errors.append(f'{song.path}: {exc}'); fingerprint = ''
-            duplicate_items.append(dict(id=key, scope='installed', path=str(song.path.relative_to(root.resolve())),
+            duplicate_items.append(dict(id=key, scope='installed', path=str(song.path.relative_to(root)),
                 chart_hash=song.chart_hash, content_hash=fingerprint,
                 format='SNG' if song.path.is_file() else 'Folder', **describe(song)))
         for key, entry in self.entries.items():
@@ -237,9 +238,9 @@ class Service:
         with self.lock:
             self.revision += 1; self.data_revision += 1
             self.snapshot = dict(config=dict(self.config), errors=list(dict.fromkeys(errors)), duplicates=groups, duplicate_items=duplicate_items,
-                songs=[dict(id=key, path=str(s.path.relative_to(root.resolve())), **describe(s)) for key, s in self.songs.items()],
+                songs=[dict(id=key, path=str(s.path.relative_to(root)), **describe(s)) for key, s in self.songs.items()],
                 archived=[dict(id=key, archive=str(e.archive.relative_to(backup)), archive_path=e.relative_path,
-                    installed=len(copies.get(e.content_hash, [])), installed_paths=[str(p.relative_to(root.resolve())) for p in copies.get(e.content_hash, [])],
+                    installed=len(copies.get(e.content_hash, [])), installed_paths=[str(p.relative_to(root)) for p in copies.get(e.content_hash, [])],
                     **describe(e.song)) for key, e in self.entries.items()],
                 archives=[dict(id=key, path=str(path.relative_to(backup)), bytes=archive_sizes[path]) for key, path in self.archives.items()],
                 trash=[dict(id=key, original=item['original'], removed=item['removed']) for key, item in self.trash.items()])
