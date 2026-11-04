@@ -413,6 +413,30 @@ def ensure_space(destination, needed):
                          f'{max(free, 0) // 1024**2} MiB is free for extraction')
 
 
+def listed_link(fields):
+    """True for a symlink/hardlink entry in `7z l -slt` output.
+
+    7-Zip prints link fields for every RAR/tar entry, empty for regular files, so
+    only a non-empty value counts. The POSIX mode follows Windows attribute letters
+    ('A lrwxrwxrwx', ' lrwxrwxrwx') or appears alone in Mode.
+    """
+    if any(value.strip() for key, value in fields.items() if 'link' in key.lower()):
+        return True
+    modes = fields.get('Attributes', '').split() + fields.get('Mode', '').split()
+    return any(re.fullmatch(r'l[-rwxsStT]{9}', mode) for mode in modes)
+
+
+def run_7z(executable, *arguments):
+    try:
+        return subprocess.run([executable, *arguments], check=True, capture_output=True, text=True,
+                              errors='replace')
+    except subprocess.CalledProcessError as exc:
+        detail = ' '.join(line.strip() for line in (exc.stderr or '').splitlines()
+                          if line.strip() and not line.startswith('7-Zip'))
+        raise ValueError(f'7z could not read this archive (exit {exc.returncode})'
+                         + (f': {detail[:300]}' if detail else '')) from exc
+
+
 def extract_archive(source, destination):
     source, destination = Path(source), Path(destination)
     if archive_format(source) == 'sng':
@@ -434,8 +458,7 @@ def extract_archive(source, destination):
         executable = shutil.which('7z') or shutil.which('7zz') or shutil.which('7za')
         if not executable:
             raise ValueError('Install 7z/7zz to import RAR and 7z archives')
-        listing = subprocess.run([executable, 'l', '-slt', '--', str(source)],
-                                 check=True, capture_output=True, text=True).stdout
+        listing = run_7z(executable, 'l', '-slt', '--', str(source)).stdout
         if '----------' not in listing:
             raise ValueError('Cannot validate archive listing')
         total = 0
@@ -443,12 +466,11 @@ def extract_archive(source, destination):
             fields = dict(line.split(' = ', 1) for line in block.splitlines() if ' = ' in line)
             if 'Path' in fields:
                 safe_member(fields['Path'])
-            if any('link' in k.lower() for k in fields) or fields.get('Attributes', '').startswith('l'):
+            if listed_link(fields):
                 raise ValueError('Archive contains links')
             if fields.get('Size', '').isdigit(): total += int(fields['Size'])
         ensure_space(destination, total)
-        subprocess.run([executable, 'x', '-y', f'-o{destination}', '--', str(source)], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        run_7z(executable, 'x', '-y', f'-o{destination}', '--', str(source))
     for folder, dirs, files in os.walk(destination):
         for name in dirs + files:
             item = Path(folder) / name

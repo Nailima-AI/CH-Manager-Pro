@@ -10,7 +10,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb dbus-x11 7zip
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb dbus-x11 7zip rar
       - name: Syntax checks
         run: |
           bash -n ch_manager_pro_installer_v5.sh

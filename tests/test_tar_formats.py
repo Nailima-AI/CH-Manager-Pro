@@ -98,6 +98,65 @@ class SevenZipFormatTests(unittest.TestCase):
             self.assertEqual(len(install_archive(root / "pack.7z", game)), 1)
             self.assertTrue((game / 'Song' / 'notes.chart').is_file())
 
+    def test_7z_symlink_rejected_before_extraction(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); src = root / 'src' / 'Song'; src.mkdir(parents=True)
+            (src / 'notes.chart').write_text('[Song]')
+            (root / 'victim').mkdir(); (src / 'esc').symlink_to(root / 'victim')
+            exe = shutil.which('7z') or shutil.which('7zz')
+            subprocess.run([exe, 'a', '-snl', str(root / 'evil.7z'), 'Song'], cwd=root / 'src', check=True, capture_output=True)
+            out = root / 'out'; out.mkdir()
+            with self.assertRaisesRegex(ValueError, 'links'):
+                extract_archive(root / 'evil.7z', out)
+            self.assertEqual(list(out.iterdir()), [])
+
+    def test_corrupt_7z_reports_value_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bad = Path(temp) / 'bad.7z'; bad.write_bytes(b'not an archive')
+            with self.assertRaisesRegex(ValueError, '7z could not read'):
+                extract_archive(bad, temp)
+
+
+@unittest.skipUnless((shutil.which('7z') or shutil.which('7zz')) and shutil.which('rar'), '7z and rar needed')
+class RarFormatTests(unittest.TestCase):
+    """RAR listings always contain empty link fields; only real links may be rejected."""
+    def make(self, root, link=False):
+        src = root / 'src' / 'Song'; src.mkdir(parents=True)
+        (src / 'notes.chart').write_text('[Song]'); (src / 'song.ini').write_text('[song]\nname=R\nartist=A\n')
+        if link: (src / 'esc').symlink_to('/etc')
+        subprocess.run(['rar', 'a', '-inul', *(['-ol'] if link else []), str(root / 'pack.rar'), 'Song'],
+                       cwd=root / 'src', check=True)
+        return root / 'pack.rar'
+
+    def test_rar_pack_installs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); game = root / 'Game'; game.mkdir()
+            self.assertEqual(len(install_archive(self.make(root), game)), 1)
+            self.assertTrue((game / 'Song' / 'notes.chart').is_file())
+
+    def test_rar_symlink_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); game = root / 'Game'; game.mkdir()
+            with self.assertRaisesRegex(ValueError, 'links'):
+                install_archive(self.make(root, link=True), game)
+
+
+class SevenZipListingTests(unittest.TestCase):
+    """Field layouts copied from real `7z l -slt` output (7-Zip 23-26)."""
+    def test_regular_entries_with_empty_link_fields_are_allowed(self):
+        from library_core import listed_link
+        rar = {'Path': 'Song/notes.mid', 'Attributes': ' -rw-r--r--', 'Symbolic Link': '', 'Hard Link': '', 'Copy Link': ''}
+        self.assertFalse(listed_link(rar))
+        self.assertFalse(listed_link({'Path': 'Song', 'Attributes': 'D drwxr-xr-x'}))
+        self.assertFalse(listed_link({'Path': 'a', 'Attributes': 'A'}))
+
+    def test_links_are_detected(self):
+        from library_core import listed_link
+        self.assertTrue(listed_link({'Path': 'S/esc', 'Attributes': 'A lrwxrwxrwx'}))  # 7z
+        self.assertTrue(listed_link({'Path': 'S/esc', 'Attributes': ' lrwxrwxrwx', 'Symbolic Link': '/etc'}))  # RAR
+        self.assertTrue(listed_link({'Path': 'S/l', 'Mode': 'lrwxrwxrwx', 'Hard Link': ''}))  # tar via 7z
+        self.assertTrue(listed_link({'Path': 'S/h', 'Attributes': 'A', 'Hard Link': 'S/x'}))
+
 
 if __name__ == '__main__':
     unittest.main()
