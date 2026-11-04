@@ -1,11 +1,11 @@
-# CH Manager Pro — headless web branch
+# CH Manager Pro — headless web
 
-The `headless-web` branch adds a single-user, self-hosted web interface. The desktop version remains on `main`. Run this branch on a Linux server with Python **3.10+**; it needs **no GTK, desktop session, or third-party Python packages**. The Python standard-library HTTP service is intended for a trusted homelab, normally behind an HTTPS reverse proxy or an SSH tunnel.
+The `main` branch provides a single-user, self-hosted web interface. The previous GTK desktop version is kept on the `desktop` branch. Run it on a Linux server with Python **3.10+**; it needs **no GTK, desktop session, or third-party Python packages**. The Python standard-library HTTP service is intended for a trusted homelab, normally behind an HTTPS reverse proxy or an SSH tunnel.
 
 ## Start it
 
 ```sh
-git clone --branch headless-web https://github.com/Nailima-AI/CH-Manager-Pro.git
+git clone https://github.com/Nailima-AI/CH-Manager-Pro.git
 cd CH-Manager-Pro
 python3 ch_web.py
 ```
@@ -103,7 +103,7 @@ Default listening is **localhost only**. For trusted LAN use, explicitly bind an
 python3 ch_web.py --host 0.0.0.0 --allowed-hosts localhost,127.0.0.1,chmanager.lan,192.168.1.50
 ```
 
-Use HTTPS for connections outside an SSH tunnel. For an existing Traefik/Nginx/Caddy proxy, keep the backend reachable only by the proxy, preserve the browser's `Host` header, configure that hostname in `--allowed-hosts`, and add `--secure-cookie` when the browser uses HTTPS. Proxy request-size and timeout settings must permit your intended archive uploads. The service checks Host, Origin, sessions, and CSRF tokens; it does not use forwarded headers to grant access. Do not expose the Python HTTP service directly to the public Internet. For an Authentik-protected proxy, keep the built-in token sign-in as an additional app login; this branch does not implement OIDC.
+Use HTTPS for connections outside an SSH tunnel. For an existing Traefik/Nginx/Caddy proxy, keep the backend reachable only by the proxy, preserve the browser's `Host` header, configure that hostname in `--allowed-hosts`, and add `--secure-cookie` when the browser uses HTTPS. Proxy request-size and timeout settings must permit your intended archive uploads. The service checks Host, Origin, sessions, and CSRF tokens; it does not use forwarded headers to grant access. Do not expose the Python HTTP service directly to the public Internet. For an Authentik-protected proxy, keep the built-in token sign-in as an additional app login; the web service does not implement OIDC.
 
 ## Docker Compose
 
@@ -125,4 +125,4 @@ python3 -m unittest discover -s tests -v
 python3 -m py_compile ch_web.py library_core.py
 ```
 
-The web tests use a real HTTP server and temporary directories to cover authentication, CSRF/Origin/Host rejection, browser uploads, archive-only imports, selective installs, removal/restore, folder previews, duplicate review, configuration persistence, and watching imports without any game-process dependency. Existing backend tests remain. GTK/7z tests run when those dependencies are available. This branch uses the same MIT license and AI-generated/AI-assisted disclaimer as the fork.
+The web tests use a real HTTP server and temporary directories to cover authentication, CSRF/Origin/Host rejection, browser uploads, archive-only imports, selective installs, removal/restore, folder previews, duplicate review, configuration persistence, and watching imports without any game-process dependency. Existing backend tests remain. GTK/7z tests run when those dependencies are available. The web version uses the same MIT license and AI-generated/AI-assisted disclaimer as the fork.
