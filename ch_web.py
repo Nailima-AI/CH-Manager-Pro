@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import gzip
 import hashlib
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -265,7 +266,7 @@ class Service:
         # Validate even archive-only imports; this also rejects unsupported/unsafe archives.
         if install:
             installed = install_archive(source, self.config['songs_dir'], self.config['organization'],
-                                        skip_existing=True, hash_cache=self.hash_cache)
+                                        skip_existing=True, hash_cache=self.hash_cache, scan_cache=self.song_cache)
         else:
             from library_core import extract_archive
             import tempfile
@@ -291,7 +292,7 @@ class Service:
             return self.refresh(True)
         if action == 'install':
             entries = self.selected(payload.get('ids'), self.entries)
-            count = len(activate_archived(entries, self.config['songs_dir'], self.config['organization']))
+            count = len(activate_archived(entries, self.config['songs_dir'], self.config['organization'], self.song_cache))
             self.refresh(); return f'Installed {count} song folders. Run Scan Songs in Clone Hero.'
         if action in ('remove_archived', 'remove_songs', 'remove_archives'):
             if payload.get('confirm') is not True: raise ValueError('Removal needs confirmation')
@@ -302,7 +303,7 @@ class Service:
                 if not isinstance(expected, list): raise ValueError('Refresh and review matching paths first')
                 root = Path(self.config['songs_dir']).resolve()
                 paths = [root / p for p in expected]
-                count = deactivate_archived(entries, root, self.quarantine, paths)
+                count = deactivate_archived(entries, root, self.quarantine, paths, self.song_cache)
             elif action == 'remove_songs':
                 songs = self.selected(payload.get('ids'), self.songs)
                 root = Path(self.config['songs_dir']).resolve()
@@ -417,6 +418,13 @@ class Handler(BaseHTTPRequestHandler):
     def respond(self, status, content, kind='application/json', headers=None):
         if kind == 'application/json': content = json.dumps(content).encode()
         elif isinstance(content, str): content = content.encode()
+        headers = dict(headers or {})
+        # Full library snapshots are megabytes of repetitive JSON; phones on Wi-Fi or a
+        # reverse proxy benefit most. Small bodies are not worth the CPU.
+        if len(content) > 1400 and self.accepts_gzip():
+            content = gzip.compress(content, 5)
+            headers['Content-Encoding'] = 'gzip'
+        headers.setdefault('Vary', 'Accept-Encoding')
         self.send_response(status)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(content)))
@@ -424,10 +432,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-        for key, value in (headers or {}).items(): self.send_header(key, value)
+        for key, value in headers.items(): self.send_header(key, value)
         self.end_headers()
         try: self.wfile.write(content)
         except (BrokenPipeError, ConnectionResetError): pass
+
+    def accepts_gzip(self):
+        for coding in self.headers.get('Accept-Encoding', '').split(','):
+            name, _, params = coding.strip().partition(';')
+            if name.strip().lower() in ('gzip', '*'):
+                return params.replace(' ', '').lower() not in ('q=0', 'q=0.0', 'q=0.00', 'q=0.000')
+        return False
 
     def safe_origin(self):
         host = self.headers.get('Host', '')

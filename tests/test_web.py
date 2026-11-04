@@ -263,4 +263,35 @@ class WebTests(unittest.TestCase):
         finally: release.set()
 
 
+    def test_large_responses_are_gzipped_only_when_accepted(self):
+        import gzip
+        server=self.start_http();auth=self.login(server)
+        code,headers,plain=self.http(server,'GET','/app.js')
+        self.assertEqual(code,200);self.assertNotIn('Content-Encoding',headers);self.assertEqual(headers['Vary'],'Accept-Encoding')
+        code,headers,packed=self.http(server,'GET','/app.js',headers={'Accept-Encoding':'br, gzip;q=0.8'})
+        self.assertEqual(headers['Content-Encoding'],'gzip');self.assertEqual(gzip.decompress(packed),plain)
+        self.assertEqual(int(headers['Content-Length']),len(packed))
+        self.assertNotIn('Content-Encoding',self.http(server,'GET','/app.js',headers={'Accept-Encoding':'gzip;q=0'})[1])
+        code,headers,body=self.http(server,'GET','/api/state',headers={**auth,'Accept-Encoding':'gzip'})
+        state=json.loads(gzip.decompress(body) if headers.get('Content-Encoding')=='gzip' else body)
+        self.assertIn('songs',state)
+        # Tiny responses stay uncompressed.
+        self.assertNotIn('Content-Encoding',self.http(server,'GET','/api/state?since=%d'%state['revision'],headers={**auth,'Accept-Encoding':'gzip'})[1])
+
+    def test_cached_scan_never_hides_edited_installed_copy(self):
+        """The scan cache narrows candidates; installed state still uses fresh content hashes."""
+        entries=self.archived_fixture();self.service.execute('install',{'ids':[entries[0]['id']]})
+        song=Path(self.service.config['songs_dir'])/self.service.public_state()['songs'][0]['path']
+        self.assertTrue(self.service.song_cache)
+        # Audio edit: chart and song.ini stamps are unchanged, so the cached Song is reused.
+        (song/'song.ogg').write_bytes(b'edited audio')
+        self.service.execute('install',{'ids':[entries[0]['id']]})
+        self.assertEqual(len(self.service.public_state()['songs']),2)
+        edited=next(e for e in self.service.public_state()['archived'] if e['id']==entries[0]['id'])
+        self.assertEqual(len(edited['installed_paths']),1)
+        # Removal only takes the unedited copy and keeps the edited one.
+        self.service.execute('remove_archived',dict(ids=[edited['id']],confirm=True,expected_paths=edited['installed_paths']))
+        self.assertTrue((song/'song.ogg').is_file())
+        self.assertEqual(len(self.service.public_state()['songs']),1)
+
 if __name__ == '__main__': unittest.main()

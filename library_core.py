@@ -559,7 +559,7 @@ def remove_song(path):
     else: Path(path).unlink()
 
 
-def install_archive(source, root, mode='none', skip_existing=False, hash_cache=None):
+def install_archive(source, root, mode='none', skip_existing=False, hash_cache=None, scan_cache=None):
     """Install every song in an archive.
 
     With skip_existing, songs whose full content already exists in the game
@@ -579,7 +579,7 @@ def install_archive(source, root, mode='none', skip_existing=False, hash_cache=N
         if skip_existing:
             pending = [ArchivedSong(Path(source), '', song, song_content_hash(song.path)) for song in songs]
             # Unreadable game copies are reported elsewhere; they never block an install.
-            copies, _ = archived_installations(pending, root, hash_cache=hash_cache)
+            copies, _ = archived_installations(pending, root, hash_cache=hash_cache, scan_cache=scan_cache)
             songs = [entry.song for entry in pending if not copies.get(entry.content_hash)]
         installed = []
         try:
@@ -777,9 +777,14 @@ class ContentHashCache:
         self.values = {k: v for k, v in self.values.items() if k in keep}
 
 
-def archived_installations(entries, game_root, content_hashes=None, songs=None, hash_cache=None):
+def archived_installations(entries, game_root, content_hashes=None, songs=None, hash_cache=None, scan_cache=None):
+    """Map content hash -> installed copies of the given archived songs.
+
+    scan_cache only speeds up finding candidate songs by chart hash; without
+    hash_cache, every candidate's full content is still hashed fresh.
+    """
     if songs is None:
-        songs, errors = scan_library(game_root)
+        songs, errors = scan_library(game_root, scan_cache)
     else:
         errors = []
     root = Path(game_root).expanduser().resolve(strict=True)
@@ -797,11 +802,11 @@ def archived_installations(entries, game_root, content_hashes=None, songs=None, 
     return dict(copies), errors
 
 
-def activate_archived(entries, game_root, mode='none'):
+def activate_archived(entries, game_root, mode='none', scan_cache=None):
     """Install individual archived songs; existing byte-identical copies are skipped."""
     if mode not in ('none', 'artist', 'author', 'game'): raise ValueError('Unsupported organization mode')
     root = Path(game_root).expanduser().resolve(strict=True)
-    copies, errors = archived_installations(entries, root)
+    copies, errors = archived_installations(entries, root, scan_cache=scan_cache)
     if errors: raise ValueError('Cannot safely determine installed state:\n' + '\n'.join(errors))
     installed = []
     try:
@@ -824,10 +829,10 @@ def activate_archived(entries, game_root, mode='none'):
     return installed
 
 
-def deactivate_archived(entries, game_root, trash, expected_paths=None):
+def deactivate_archived(entries, game_root, trash, expected_paths=None, scan_cache=None):
     """Remove only current, full-content matches through a recoverable Trash callback."""
     root = Path(game_root).expanduser().resolve(strict=True)
-    copies, errors = archived_installations(entries, root)
+    copies, errors = archived_installations(entries, root, scan_cache=scan_cache)
     if errors: raise ValueError('Cannot safely determine installed state:\n' + '\n'.join(errors))
     expected = {entry.content_hash for entry in entries}
     targets = [(path, fingerprint) for fingerprint in expected for path in copies.get(fingerprint, [])]
