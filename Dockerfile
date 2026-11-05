@@ -8,11 +8,15 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 COPY ch_web.py library_core.py ./
 COPY web ./web
-RUN useradd --uid 1000 --create-home chmanager && mkdir /data && chown chmanager:chmanager /data
+# The library folders exist in the image so new named volumes inherit this ownership.
+RUN useradd --uid 1000 --create-home chmanager \
+    && mkdir /data /songs /archives /downloads \
+    && chown chmanager:chmanager /data /songs /archives /downloads
 USER chmanager
-VOLUME ["/data"]
+VOLUME ["/data", "/songs", "/archives", "/downloads"]
 EXPOSE 8899
-# The default allowed hosts include 127.0.0.1, which is what this probe sends.
+# Loopback requests are always allowed, whatever CH_WEB_ALLOWED_HOSTS says.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8899/', timeout=4)"
+ENV CH_WEB_SONGS_DIR=/songs CH_WEB_ARCHIVES_DIR=/archives CH_WEB_DOWNLOADS_DIR=/downloads
 CMD ["python3", "ch_web.py", "--data-dir", "/data", "--host", "0.0.0.0"]

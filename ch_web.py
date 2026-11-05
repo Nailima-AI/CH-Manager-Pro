@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 import gzip
 import hashlib
+import ipaddress
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -73,8 +74,11 @@ class Service:
         self.data.mkdir(parents=True, exist_ok=True)
         os.chmod(self.data, 0o700)
         self.config_path = self.data / 'web-config.json'
-        defaults = dict(songs_dir=str(self.data / 'Songs'), backup_dir=str(self.data / 'Archives'),
-                        downloads_dir=str(self.data / 'Downloads'), organization='none',
+        # First-start folders; saved Settings always win. Docker Compose sets these to /songs etc.
+        env = os.environ.get
+        defaults = dict(songs_dir=env('CH_WEB_SONGS_DIR') or str(self.data / 'Songs'),
+                        backup_dir=env('CH_WEB_ARCHIVES_DIR') or str(self.data / 'Archives'),
+                        downloads_dir=env('CH_WEB_DOWNLOADS_DIR') or str(self.data / 'Downloads'), organization='none',
                         monitoring=False, auto_install=True)
         if self.config_path.exists(): defaults.update(json.loads(self.config_path.read_text()))
         self.config = self.validate_config(defaults)
@@ -433,11 +437,14 @@ class Service:
 
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
-    def __init__(self, address, service, token, allowed_hosts=None, secure_cookie=False, max_upload=2 * 1024**3):
+    def __init__(self, address, service, token, allowed_hosts=None, secure_cookie=False, max_upload=2 * 1024**3,
+                 trusted_proxies=None):
         self.service, self.token = service, token
         self.sessions = {}; self.session_lock = threading.Lock()
-        # Hostnames are case-insensitive; urlsplit lowercases the request's hostname.
+        # Hostnames are case-insensitive; urlsplit lowercases the request's hostname. '*' allows any Host.
         self.allowed_hosts = {h.strip().lower() for h in (allowed_hosts or ['localhost', '127.0.0.1', '[::1]']) if h.strip()}
+        # Requests from these addresses may use any Host, and only their X-Forwarded-* headers are believed.
+        self.trusted_proxies = [ipaddress.ip_network(p.strip(), strict=False) for p in (trusted_proxies or []) if p.strip()]
         self.secure_cookie, self.max_upload = secure_cookie, max_upload
         self.login_attempts = {}
         super().__init__(address, Handler)
@@ -477,15 +484,64 @@ class Handler(BaseHTTPRequestHandler):
                 return params.replace(' ', '').lower() not in ('q=0', 'q=0.0', 'q=0.00', 'q=0.000')
         return False
 
+    @staticmethod
+    def address(value):
+        try:
+            ip = ipaddress.ip_address(value.strip().strip('[]'))
+            return ip.ipv4_mapped or ip if ip.version == 6 else ip
+        except ValueError:
+            return None
+
+    def trusted(self, ip):
+        return ip is not None and any(ip in network for network in self.server.trusted_proxies)
+
+    def from_trusted_proxy(self):
+        return self.trusted(self.address(self.client_address[0]))
+
+    def forwarded(self, name):
+        """First value of an X-Forwarded-* header, only when a trusted proxy sent the request."""
+        if not self.from_trusted_proxy(): return ''
+        return self.headers.get(name, '').split(',')[0].strip()
+
+    def client_ip(self):
+        """The browser's address: the nearest untrusted hop in X-Forwarded-For behind trusted proxies."""
+        peer = self.client_address[0]
+        if not self.from_trusted_proxy(): return peer
+        hops = [h.strip() for h in ','.join(self.headers.get_all('X-Forwarded-For') or []).split(',') if h.strip()]
+        for hop in reversed(hops):
+            ip = self.address(hop)
+            if ip is None: break
+            if not self.trusted(ip): return str(ip)
+        return hops[0] if hops and self.address(hops[0]) else peer
+
+    def request_host(self):
+        return self.forwarded('X-Forwarded-Host') or self.headers.get('Host', '')
+
+    def request_scheme(self):
+        scheme = self.forwarded('X-Forwarded-Proto').lower()
+        return scheme if scheme in ('http', 'https') else 'http'
+
+    @staticmethod
+    def netloc(value, scheme):
+        value = value.strip().lower()
+        default = {'http': ':80', 'https': ':443'}[scheme]
+        return value[:-len(default)] if value.endswith(default) else value
+
     def safe_origin(self):
-        host = self.headers.get('Host', '')
+        host = self.request_host()
         parsed = urlsplit('//' + host)
-        if not parsed.hostname or (parsed.hostname not in self.server.allowed_hosts and f'[{parsed.hostname}]' not in self.server.allowed_hosts):
+        if not parsed.hostname: return False
+        allowed = self.server.allowed_hosts
+        loopback = parsed.hostname in ('localhost', '127.0.0.1', '::1') and getattr(self.address(self.client_address[0]), 'is_loopback', False)
+        # Container health checks and local tools always work, whatever --allowed-hosts says.
+        if not (self.from_trusted_proxy() or '*' in allowed or loopback
+                or parsed.hostname in allowed or f'[{parsed.hostname}]' in allowed):
             return False
         origin = self.headers.get('Origin')
         if origin:
             parsed_origin = urlsplit(origin)
-            if parsed_origin.scheme not in ('http', 'https') or parsed_origin.netloc != host: return False
+            if parsed_origin.scheme not in ('http', 'https'): return False
+            if self.netloc(parsed_origin.netloc, parsed_origin.scheme) != self.netloc(host, self.request_scheme()): return False
         return True
 
     def session(self):
@@ -530,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.safe_origin(): return self.respond(403, {'error':'Untrusted Host or Origin'})
             path = urlsplit(self.path).path
             if path == '/api/login':
-                peer = self.client_address[0]
+                peer = self.client_ip()
                 with self.server.session_lock:
                     now = time.time()
                     # Drop expired entries for every peer so the table cannot grow without bound.
@@ -544,7 +600,7 @@ class Handler(BaseHTTPRequestHandler):
                 sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
                 with self.server.session_lock:
                     self.server.sessions[sid] = dict(csrf=csrf, expires=time.time()+12*3600)
-                secure = '; Secure' if self.server.secure_cookie else ''
+                secure = '; Secure' if self.server.secure_cookie or self.request_scheme() == 'https' else ''
                 return self.respond(200, {'ok':True}, headers={'Set-Cookie':f'ch_session={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200{secure}'})
             session = self.session()
             if not session: return self.respond(401, {'error':'Authentication required'})
@@ -597,11 +653,18 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-dir', default=os.environ.get('CH_WEB_DATA', '~/.local/share/ch_manager_web'))
-    parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', default=8899, type=int)
-    parser.add_argument('--allowed-hosts', default='localhost,127.0.0.1,[::1]')
-    parser.add_argument('--secure-cookie', action='store_true', help='Enable for HTTPS reverse proxy access')
-    parser.add_argument('--max-upload-mib', default=2048, type=int)
+    env = os.environ.get
+    parser.add_argument('--host', default=env('CH_WEB_HOST') or '127.0.0.1')
+    parser.add_argument('--port', default=int(env('CH_WEB_PORT') or 8899), type=int)
+    parser.add_argument('--allowed-hosts', default=env('CH_WEB_ALLOWED_HOSTS') or 'localhost,127.0.0.1,[::1]',
+                        help="Hostnames browsers may use, comma-separated; '*' allows any")
+    parser.add_argument('--trusted-proxies', default=env('CH_WEB_TRUSTED_PROXIES', ''),
+                        help='Reverse-proxy IPs/CIDRs, comma-separated; requests through them are accepted for any '
+                             'client and host, and their X-Forwarded-For/Host/Proto headers are used')
+    parser.add_argument('--secure-cookie', action='store_true',
+                        default=env('CH_WEB_SECURE_COOKIE', '').strip().lower() in ('1', 'true', 'yes', 'on'),
+                        help='Enable for HTTPS reverse proxy access')
+    parser.add_argument('--max-upload-mib', default=int(env('CH_WEB_MAX_UPLOAD_MIB') or 2048), type=int)
     args = parser.parse_args()
     service = Service(args.data_dir)
     token_path = service.data / 'access-token'
@@ -612,8 +675,11 @@ def main():
             token = secrets.token_urlsafe(32)
             token_path.write_text(token + '\n'); os.chmod(token_path, 0o600)
     if len(token) < 24: raise SystemExit('CH_WEB_TOKEN must contain at least 24 characters')
-    server = WebServer((args.host, args.port), service, token,
-        args.allowed_hosts.split(','), args.secure_cookie, args.max_upload_mib * 1024**2)
+    try:
+        server = WebServer((args.host, args.port), service, token, args.allowed_hosts.split(','), args.secure_cookie,
+                           args.max_upload_mib * 1024**2, args.trusted_proxies.split(','))
+    except ValueError as exc:
+        raise SystemExit(f'Invalid --trusted-proxies entry: {exc}')
     print(f'CH Manager Web {VERSION}: http://{args.host}:{args.port}', flush=True)
     print(f'Access token: CH_WEB_TOKEN environment variable or {token_path}', flush=True)
     service.start()

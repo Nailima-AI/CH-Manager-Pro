@@ -103,16 +103,29 @@ Default listening is **localhost only**. For trusted LAN use, explicitly bind an
 python3 ch_web.py --host 0.0.0.0 --allowed-hosts localhost,127.0.0.1,chmanager.lan,192.168.1.50
 ```
 
-Use HTTPS for connections outside an SSH tunnel. For an existing Traefik/Nginx/Caddy proxy, keep the backend reachable only by the proxy, preserve the browser's `Host` header, configure that hostname in `--allowed-hosts`, and add `--secure-cookie` when the browser uses HTTPS. Proxy request-size and timeout settings must permit your intended archive uploads. The service checks Host, Origin, sessions, and CSRF tokens; it does not use forwarded headers to grant access. Do not expose the Python HTTP service directly to the public Internet. For an Authentik-protected proxy, keep the built-in token sign-in as an additional app login; the web service does not implement OIDC.
+`--allowed-hosts '*'` (the Docker Compose default) accepts any hostname or IP. Requests from the server itself (`localhost`, `127.0.0.1`, `::1`) are always accepted, so health checks keep working with a restrictive list.
+
+### Trusted reverse proxies
+
+List your proxy's address with `--trusted-proxies` (or `CH_WEB_TRUSTED_PROXIES`), as IPs or CIDR ranges such as `172.16.0.0/12,192.168.1.20`. Requests arriving from those addresses:
+
+- are accepted for any hostname and any client IP behind the proxy;
+- take the client IP from `X-Forwarded-For` (the nearest address that isn't itself a trusted proxy), which sign-in rate limiting uses;
+- take the hostname from `X-Forwarded-Host` (or `Host`) and the scheme from `X-Forwarded-Proto`. The browser's `Origin` must still match that hostname, and an `https` scheme marks the sign-in cookie Secure automatically.
+
+`X-Forwarded-*` headers from any other address are ignored, so clients can't forge them. Only list addresses that nothing but your proxy connects from: in Docker, that is the proxy container's network range, or the bridge gateway (for example `172.17.0.1`) when the proxy reaches a published port on the same host.
+
+Use HTTPS for connections outside your LAN or an SSH tunnel. For an existing Traefik/Nginx/Caddy proxy, either list the proxy in `--trusted-proxies` (above), or preserve the browser's `Host` header, configure that hostname in `--allowed-hosts`, and add `--secure-cookie` when the browser uses HTTPS. Proxy request-size and timeout settings must permit your intended archive uploads. The service checks Host, Origin, sessions, and CSRF tokens; forwarded headers are only read from trusted proxies, and never replace the sign-in token. Do not expose the Python HTTP service directly to the public Internet. For an Authentik-protected proxy, keep the built-in token sign-in as an additional app login; the web service does not implement OIDC.
 
 ## Docker Compose
 
 ```sh
+cp .env.example .env
 docker compose up -d --build
 docker compose exec ch-manager cat /data/access-token
 ```
 
-The included Compose file publishes `127.0.0.1:8899` and persists app data plus the default song/archive/watch folders in a named volume. To reuse host folders, enable the example volume mappings and then set the **container paths** (`/songs`, `/archives`, `/downloads`) in Settings. The image runs as UID/GID 1000; adjust host permissions or the container user to match your storage. For HTTPS proxy access, override the command with `--allowed-hosts your-hostname --secure-cookie` and connect through a private container network. The image installs `p7zip-full` plus Debian's non-free `p7zip-rar`, so RAR packs import in the container; CI checks that the RAR5 codec is present. The container has a health check against the sign-in page. A commented NFS named-volume example is included in `compose.yaml` for mounting the song export directly. GitHub Actions builds this image and runs a Compose smoke test on Ubuntu x86-64, covering startup as UID 1000, login, frontend assets, archive upload/import, native SNG imports, archive duplicate review, selective song installation, removal/restore, and persistence after container recreation. Other CPU architectures and optional host-folder bind mounts have not been tested.
+All Compose settings live in `.env`; [`.env.example`](.env.example) documents each one, and everything has a default. The Compose file publishes port 8899 on all interfaces (`CH_WEB_BIND`, `CH_WEB_HOST_PORT`) and accepts any hostname (`CH_WEB_ALLOWED_HOSTS=*`). App data lives in a named volume; the song, archive and watch folders are mounted at `/songs`, `/archives` and `/downloads`, as named volumes by default or host folders via `CH_SONGS_DIR`, `CH_ARCHIVES_DIR` and `CH_DOWNLOADS_DIR`. A fresh install uses those paths automatically; an existing install keeps the folders saved in Settings until you change them there. The image runs as UID/GID 1000; adjust host permissions to match your storage. For a reverse proxy, set `CH_WEB_TRUSTED_PROXIES` to the proxy's address. The image installs `p7zip-full` plus Debian's non-free `p7zip-rar`, so RAR packs import in the container; CI checks that the RAR5 codec is present. The container has a health check against the sign-in page. A commented NFS named-volume example is included in `compose.yaml` for mounting the song export directly (point `CH_SONGS_DIR` at it). GitHub Actions builds this image and runs a Compose smoke test on Ubuntu x86-64, covering startup as UID 1000, login, frontend assets, archive upload/import, native SNG imports, archive duplicate review, selective song installation, removal/restore, and persistence after container recreation. Other CPU architectures and optional host-folder bind mounts have not been tested.
 
 ## systemd
 
