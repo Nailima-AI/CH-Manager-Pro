@@ -28,16 +28,22 @@ git clone https://github.com/Nailima-AI/CH-Manager-Pro.git
 ```
 
 ```bash
-cd CH-Manager-Pro && docker compose up -d --build
+cd CH-Manager-Pro && cp .env.example .env
+```
+
+Edit `.env` (every setting is optional and explained there), then start it and read the sign-in token:
+
+```bash
+docker compose up -d --build
 ```
 
 ```bash
 docker compose exec ch-manager cat /data/access-token
 ```
 
-Open `http://127.0.0.1:8899` on the server and sign in with that token. The image includes 7-Zip with the RAR codec.
+Open `http://<server-ip>:8899` from any device on your network and sign in with that token. The image includes 7-Zip with the RAR codec.
 
-By default all data, including songs and archives, lives in a Docker volume. To use real folders on your server, uncomment the example mounts in [`compose.yaml`](compose.yaml) and enter the container paths (`/songs`, `/archives`, `/downloads`) in **Settings**. The container runs as UID 1000, so those folders must be writable by that user. An NFS volume example is included too.
+By default the songs, archive and watch folders are Docker named volumes. To use real folders on your server, set `CH_SONGS_DIR`, `CH_ARCHIVES_DIR` and `CH_DOWNLOADS_DIR` in `.env` to host paths. The container runs as UID 1000, so those folders must be writable by that user. An NFS volume example is in [`compose.yaml`](compose.yaml).
 
 ### Plain Python
 
@@ -59,15 +65,13 @@ cat ~/.local/share/ch_manager_web/access-token
 
 A sample systemd unit is in [`deploy/ch-manager-web.service`](deploy/ch-manager-web.service).
 
-### Reaching it from another device
+### Network access
 
-The server listens on localhost only. From your computer, use an SSH tunnel and open `http://127.0.0.1:8899`:
+- **Docker Compose** publishes port 8899 on every interface and accepts any hostname, so `http://<server-ip>:8899` works from your LAN. Set `CH_WEB_BIND=127.0.0.1` in `.env` to allow only the server itself.
+- **Plain Python** listens on localhost only by default. Use `--host 0.0.0.0 --allowed-hosts '*'` to expose it, or an SSH tunnel: `ssh -L 8899:127.0.0.1:8899 user@your-server`.
+- **Behind a reverse proxy** (Traefik, Caddy, Nginx…), list the proxy's IP or subnet in `CH_WEB_TRUSTED_PROXIES` (or `--trusted-proxies`). Requests through it are accepted for any client IP and hostname, and the app reads the real client IP, hostname and HTTPS scheme from the proxy's `X-Forwarded-For/Host/Proto` headers. Those headers are ignored from any other address.
 
-```bash
-ssh -L 8899:127.0.0.1:8899 user@your-server
-```
-
-For LAN or reverse-proxy access, see [Networking](HEADLESS.md#lan-or-reverse-proxy-access). Don't expose the app directly to the internet.
+The sign-in token is required in every case. Don't put the app directly on the public internet; use HTTPS through a proxy or a VPN. More detail: [Networking](HEADLESS.md#lan-or-reverse-proxy-access).
 
 ## Playing the songs in Clone Hero
 
@@ -79,17 +83,21 @@ The archive folder can stay on the server; Clone Hero never needs to see it.
 
 ## Configuration
 
-Folders, folder organization, download watching and whether new imports install automatically are set in the app's **Settings** page. Server options are command-line flags:
+Folders, folder organization, download watching and whether new imports install automatically are set in the app's **Settings** page. Server options can be command-line flags or environment variables; with Docker Compose, set them in `.env` (see [`.env.example`](.env.example)).
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `--data-dir` | `~/.local/share/ch_manager_web` (or `$CH_WEB_DATA`) | Settings, token, Trash, uploads |
-| `--host` | `127.0.0.1` | Listen address; use `0.0.0.0` only with `--allowed-hosts` |
-| `--port` | `8899` | Listen port |
-| `--allowed-hosts` | `localhost,127.0.0.1,[::1]` | Hostnames the browser may use |
-| `--secure-cookie` | off | Set when serving over HTTPS through a proxy |
-| `--max-upload-mib` | `2048` | Largest accepted upload per file |
-| `CH_WEB_TOKEN` env var | generated | Use your own sign-in token (24+ characters) |
+| Flag | Environment variable | Default | Purpose |
+| --- | --- | --- | --- |
+| `--data-dir` | `CH_WEB_DATA` | `~/.local/share/ch_manager_web` | Settings, token, Trash, uploads |
+| `--host` | `CH_WEB_HOST` | `127.0.0.1` (`0.0.0.0` in Docker) | Listen address |
+| `--port` | `CH_WEB_PORT` | `8899` | Listen port |
+| `--allowed-hosts` | `CH_WEB_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` (`*` in Compose) | Hostnames browsers may use; `*` allows any |
+| `--trusted-proxies` | `CH_WEB_TRUSTED_PROXIES` | none | Reverse-proxy IPs/CIDRs whose requests are accepted for any client and hostname |
+| `--secure-cookie` | `CH_WEB_SECURE_COOKIE` | off | HTTPS-only sign-in cookie (automatic when a trusted proxy reports HTTPS) |
+| `--max-upload-mib` | `CH_WEB_MAX_UPLOAD_MIB` | `2048` | Largest accepted upload per file |
+| | `CH_WEB_TOKEN` | generated | Your own sign-in token (24+ characters) |
+| | `CH_WEB_SONGS_DIR`, `CH_WEB_ARCHIVES_DIR`, `CH_WEB_DOWNLOADS_DIR` | inside the data folder (`/songs` etc. in Docker) | Folders used on first start; change them later in Settings |
+
+Compose-only settings in `.env`: `CH_WEB_BIND` and `CH_WEB_HOST_PORT` (where the port is published) and `CH_SONGS_DIR`, `CH_ARCHIVES_DIR`, `CH_DOWNLOADS_DIR` (host folders to mount).
 
 ## Resource use
 

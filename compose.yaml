@@ -1,21 +1,37 @@
+# Settings come from .env next to this file: copy .env.example to .env and edit it.
+# Every value has a default, so this also runs without a .env file.
 services:
   ch-manager:
     build: .
     restart: unless-stopped
     init: true
     ports:
-      - "127.0.0.1:8899:8899"
+      # Published on every interface by default; set CH_WEB_BIND=127.0.0.1 for local/tunnel/proxy-only access.
+      - "${CH_WEB_BIND:-0.0.0.0}:${CH_WEB_HOST_PORT:-8899}:8899"
+    environment:
+      CH_WEB_ALLOWED_HOSTS: ${CH_WEB_ALLOWED_HOSTS:-*}
+      CH_WEB_TRUSTED_PROXIES: ${CH_WEB_TRUSTED_PROXIES:-}
+      CH_WEB_SECURE_COOKIE: ${CH_WEB_SECURE_COOKIE:-false}
+      CH_WEB_MAX_UPLOAD_MIB: ${CH_WEB_MAX_UPLOAD_MIB:-2048}
+      CH_WEB_TOKEN: ${CH_WEB_TOKEN:-}
     volumes:
       - ch-manager-data:/data
-      # Optional server folders; make them writable by container UID 1000.
-      # - /srv/clonehero/Songs:/songs
-      # - /srv/clonehero/Archives:/archives
-      # - /srv/clonehero/Downloads:/downloads
-      # Or mount an NFS export directly (see the songs-nfs volume below):
-      # - songs-nfs:/songs
+      # A host path (e.g. /srv/clonehero/Songs) bind-mounts that folder; the default is a named volume.
+      # Host folders must be writable by UID 1000, the user the container runs as.
+      - ${CH_SONGS_DIR:-ch-manager-songs}:/songs
+      - ${CH_ARCHIVES_DIR:-ch-manager-archives}:/archives
+      - ${CH_DOWNLOADS_DIR:-ch-manager-downloads}:/downloads
+    # Optional resource caps; see "Resource use" in README.md.
+    # mem_limit: 256m
+    # cpus: 1.0
+
 volumes:
   ch-manager-data:
-  # songs-nfs:
+  ch-manager-songs:
+  ch-manager-archives:
+  ch-manager-downloads:
+  # To mount an NFS export directly, set CH_SONGS_DIR=ch-manager-songs-nfs in .env and uncomment:
+  # ch-manager-songs-nfs:
   #   driver: local
   #   driver_opts:
   #     type: nfs

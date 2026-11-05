@@ -351,4 +351,59 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.http(server,'POST','/api/action',{'action':['refresh']},auth)[0],400)
         self.assertEqual(self.http(server,'POST','/api/preview',{'ids':['x'],'mode':'custom','custom':123},auth)[0],400)
 
+    def proxied_server(self, **options):
+        server=WebServer(('127.0.0.1',0), self.service, 'test-token-with-at-least-24-chars', **options)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        return server
+
+    def test_any_host_when_allowed_hosts_is_star(self):
+        server=self.proxied_server(allowed_hosts=['*'])
+        self.assertEqual(self.http(server,'GET','/',headers={'Host':'192.168.1.50:8899'})[0],200)
+        code,headers,_=self.http(server,'POST','/api/login',{'token':server.token},{'Host':'chmanager.lan:8899','Origin':'http://chmanager.lan:8899'})
+        self.assertEqual(code,200);self.assertNotIn('Secure',headers['Set-Cookie'])
+        # Cross-site requests are still refused.
+        self.assertEqual(self.http(server,'POST','/api/login',{'token':server.token},{'Host':'chmanager.lan','Origin':'https://evil.example'})[0],403)
+
+    def test_loopback_always_allowed_for_health_checks(self):
+        server=self.proxied_server(allowed_hosts=['chmanager.lan'])
+        self.assertEqual(self.http(server,'GET','/',headers={'Host':'127.0.0.1:8899'})[0],200)
+        self.assertEqual(self.http(server,'GET','/',headers={'Host':'other.lan'})[0],403)
+
+    def test_trusted_proxy_accepts_any_host_and_forwarded_headers(self):
+        server=self.proxied_server(allowed_hosts=['localhost'],trusted_proxies=['127.0.0.0/8'])
+        forwarded={'Host':'backend:8899','X-Forwarded-Host':'music.example.com','X-Forwarded-Proto':'https',
+                   'X-Forwarded-For':'203.0.113.9','Origin':'https://music.example.com'}
+        self.assertEqual(self.http(server,'GET','/',headers={'Host':'anything.internal'})[0],200)
+        code,headers,_=self.http(server,'POST','/api/login',{'token':server.token},forwarded)
+        self.assertEqual(code,200);self.assertIn('Secure',headers['Set-Cookie'])  # HTTPS seen through the proxy
+        self.assertIn('203.0.113.9',server.login_attempts)
+        # The Origin must still match the host the browser used.
+        self.assertEqual(self.http(server,'POST','/api/login',{'token':server.token},{**forwarded,'Origin':'https://evil.example'})[0],403)
+
+    def test_forwarded_headers_ignored_from_untrusted_peers(self):
+        server=self.proxied_server(allowed_hosts=['localhost'],trusted_proxies=['10.0.0.0/8'])
+        spoofed={'Host':'evil.example','X-Forwarded-Host':'localhost','X-Forwarded-For':'198.51.100.7'}
+        self.assertEqual(self.http(server,'GET','/',headers=spoofed)[0],403)
+        self.http(server,'POST','/api/login',{'token':'wrong'},{'Host':'localhost','X-Forwarded-For':'198.51.100.7','X-Forwarded-Proto':'https'})
+        self.assertNotIn('198.51.100.7',server.login_attempts);self.assertIn('127.0.0.1',server.login_attempts)
+
+    def test_client_ip_skips_trusted_hops(self):
+        server=self.proxied_server(trusted_proxies=['127.0.0.0/8','10.0.0.0/8'])
+        self.http(server,'POST','/api/login',{'token':'wrong'},{'Host':'localhost','X-Forwarded-For':'1.2.3.4, 203.0.113.5, 10.1.1.1'})
+        self.assertEqual(set(server.login_attempts),{'203.0.113.5'})  # 1.2.3.4 could be forged by the client
+
+    def test_invalid_trusted_proxy_is_rejected(self):
+        with self.assertRaises(ValueError): WebServer(('127.0.0.1',0), self.service, 'x'*24, trusted_proxies=['not-an-ip'])
+
+    def test_first_start_folders_from_environment(self):
+        root=Path(self.temp.name)
+        with patch.dict('os.environ',{'CH_WEB_SONGS_DIR':str(root/'s'),'CH_WEB_ARCHIVES_DIR':str(root/'a'),'CH_WEB_DOWNLOADS_DIR':str(root/'d')}):
+            fresh=Service(root/'fresh-data');self.addCleanup(fresh.close)
+            self.assertEqual(fresh.config['songs_dir'],str((root/'s').resolve()))
+            # Saved settings win over the environment afterwards.
+            fresh.execute('settings',{'songs_dir':str(root/'other')})
+            reopened=Service(root/'fresh-data');self.addCleanup(reopened.close)
+            self.assertEqual(reopened.config['songs_dir'],str((root/'other').resolve()))
+
 if __name__ == '__main__': unittest.main()
