@@ -406,4 +406,14 @@ class WebTests(unittest.TestCase):
             reopened=Service(root/'fresh-data');self.addCleanup(reopened.close)
             self.assertEqual(reopened.config['songs_dir'],str((root/'other').resolve()))
 
+    def test_favicons_are_served_without_sign_in(self):
+        server=self.start_http()
+        web=Path(__file__).resolve().parents[1]/'web'
+        for path,kind in (('/favicon.svg','image/svg+xml'),('/favicon.ico','image/x-icon'),('/apple-touch-icon.png','image/png')):
+            code,headers,body=self.http(server,'GET',path)
+            self.assertEqual((code,headers['Content-Type']),(200,kind),path)
+            self.assertEqual(body,(web/path.lstrip('/')).read_bytes())
+        page=self.http(server,'GET','/')[2]
+        for link in (b'href="/favicon.svg"',b'href="/favicon.ico"',b'href="/apple-touch-icon.png"'): self.assertIn(link,page)
+
 if __name__ == '__main__': unittest.main()

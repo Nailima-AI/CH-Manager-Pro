@@ -566,7 +566,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.safe_origin(): return self.respond(403, {'error':'Host not allowed. Configure --allowed-hosts.'})
             path = urlsplit(self.path).path
-            assets = {'/':('index.html', 'text/html; charset=utf-8'), '/app.js':('app.js','text/javascript; charset=utf-8'), '/style.css':('style.css','text/css; charset=utf-8')}
+            assets = {'/':('index.html', 'text/html; charset=utf-8'), '/app.js':('app.js','text/javascript; charset=utf-8'), '/style.css':('style.css','text/css; charset=utf-8'),
+                      '/favicon.svg':('favicon.svg','image/svg+xml'), '/favicon.ico':('favicon.ico','image/x-icon'),
+                      '/apple-touch-icon.png':('apple-touch-icon.png','image/png')}
             if path in assets:
                 filename, kind = assets[path]
                 return self.respond(200, (ASSETS / filename).read_bytes(), kind)
