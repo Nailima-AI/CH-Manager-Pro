@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from ch_web import Service, WebServer
+from ch_web import Service, WebServer, duplicate_review_groups
 
 
 class WebTests(unittest.TestCase):
@@ -416,5 +416,14 @@ class WebTests(unittest.TestCase):
             self.assertEqual(body,(web/path.lstrip('/')).read_bytes())
         page=self.http(server,'GET','/')[2]
         for link in (b'href="/favicon.svg"',b'href="/favicon.ico"',b'href="/apple-touch-icon.png"'): self.assertIn(link,page)
+
+    def test_unknown_title_or_artist_never_makes_possible_duplicates(self):
+        def item(key, name, artist, chart):
+            return dict(id=key, scope='installed', name=name, artist=artist, chart_hash=chart, content_hash=key)
+        groups = duplicate_review_groups([item('a', 'Unknown', 'Unknown', 'c1'), item('b', 'Unknown', 'Unknown', 'c2'),
+                                          item('c', 'Song', 'Unknown', 'c3'), item('d', 'Song', 'Unknown', 'c4')])
+        self.assertEqual(groups, [])
+        groups = duplicate_review_groups([item('e', 'Song', 'Band', 'c5'), item('f', 'song!', 'BAND', 'c6')])
+        self.assertEqual([(g['category'], sorted(g['ids'])) for g in groups], [('metadata', ['e', 'f'])])
 
 if __name__ == '__main__': unittest.main()
