@@ -1,3 +1,4 @@
+# AI:X | 0RWX AI MADE | https://0rwx.com
 FROM python:3.12-slim-bookworm
 # p7zip-full alone cannot open RAR; p7zip-rar (Debian non-free) adds the RAR codec.
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \

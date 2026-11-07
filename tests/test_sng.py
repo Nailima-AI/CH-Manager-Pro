@@ -1,3 +1,4 @@
+# AI:X | 0RWX AI MADE | https://0rwx.com
 """Independent SNGPKG v1 fixtures based on the public binary specification."""
 import hashlib
 from pathlib import Path

@@ -1,3 +1,4 @@
+// AI:X | 0RWX AI MADE | https://0rwx.com
 'use strict';
 const $ = id => document.getElementById(id);
 let lastBusy=null, state=null, csrf='', activeTab='songs', selected=new Set(), reviewAction=null, settingsDirty=false, importing=false, settingsSaveJob=null, stateRequest=null, sessionEpoch=0;

@@ -1,3 +1,4 @@
+# AI:X | 0RWX AI MADE | https://0rwx.com
 name: Headless web and library checks
 on: [push, pull_request, workflow_dispatch]
 permissions:

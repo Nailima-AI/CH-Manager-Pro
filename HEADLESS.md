@@ -138,4 +138,6 @@ python3 -m unittest discover -s tests -v
 python3 -m py_compile ch_web.py library_core.py
 ```
 
-The web tests use a real HTTP server and temporary directories to cover authentication, CSRF/Origin/Host rejection, browser uploads, archive-only imports, selective installs, removal/restore, folder previews, duplicate review, configuration persistence, and watching imports without any game-process dependency. Existing backend tests remain. GTK/7z tests run when those dependencies are available. The web version uses the same MIT license and AI-generated/AI-assisted disclaimer as the fork.
+The web tests use a real HTTP server and temporary directories to cover authentication, CSRF/Origin/Host rejection, browser uploads, archive-only imports, selective installs, removal/restore, folder previews, duplicate review, configuration persistence, and watching imports without any game-process dependency. Existing backend tests remain. GTK/7z tests run when those dependencies are available. The web version uses the same MIT license as the fork.
+
+> Code in this project is labeled AI:X (AI made, not human-reviewed line by line). Framework: https://0rwx.com

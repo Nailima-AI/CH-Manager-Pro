@@ -1,3 +1,4 @@
+# AI:X | 0RWX AI MADE | https://0rwx.com
 """Optional real GTK smoke test, isolated from the user's app configuration."""
 import os
 from pathlib import Path

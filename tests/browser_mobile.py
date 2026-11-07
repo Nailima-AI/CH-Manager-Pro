@@ -1,3 +1,4 @@
+# AI:X | 0RWX AI MADE | https://0rwx.com
 """Responsive browser regression checks against a disposable real HTTP server.
 
 Run with a test-only Playwright install: python tests/browser_mobile.py.

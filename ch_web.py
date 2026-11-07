@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# AI:X | 0RWX AI MADE | https://0rwx.com
 """Single-user headless web frontend for CH Manager Pro; Python standard library only."""
 from __future__ import annotations
 

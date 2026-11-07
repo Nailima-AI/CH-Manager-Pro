@@ -1,3 +1,4 @@
+# AI:X | 0RWX AI MADE | https://0rwx.com
 """Clone Hero library operations. No GTK or network dependencies."""
 from __future__ import annotations
 

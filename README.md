@@ -150,6 +150,10 @@ The tests run a real HTTP server against temporary folders. Tests needing `7z`, 
 | `web/` | The browser interface: plain HTML, CSS and JavaScript, no build step |
 | `ch_manager_pro.py`, installer | The legacy GTK desktop app; see the `desktop` branch |
 
+AI-made source files start with an `AI:X | 0RWX AI MADE` comment; [CLAUDE.md](CLAUDE.md) has the labeling rules for AI changes to this repo. The installer is not labeled because it is still mostly the upstream author's hand-written code.
+
 ## License and credits
 
-[MIT](LICENSE). Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-Pro); original copyright and attribution are retained. This fork's changes are AI-generated and AI-assisted code: review them, and back up your song and archive folders before pointing the app at your main library.
+[MIT](LICENSE). Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-Pro); original copyright and attribution are retained. This fork's changes are AI made and have not been reviewed line by line by a person, so back up your song and archive folders before pointing the app at your main library.
+
+> Code in this project is labeled AI:X (AI made, not human-reviewed line by line). Framework: https://0rwx.com
