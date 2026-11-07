@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from library_core import (scan_library, duplicate_groups, plan_moves, apply_moves,
+from library_core import (scan_library, plan_moves, apply_moves,
                           install_archive, component, UNKNOWN)
 
 
@@ -119,18 +119,6 @@ class LibraryTests(unittest.TestCase):
     def test_no_guess_from_title(self):
         self.song(meta='name=Guitar Hero III')
         self.assertEqual(self.scan()[0].game, UNKNOWN)
-
-    def test_duplicates(self):
-        self.song('First'); self.song('Copy'); self.song('Different chart', notes=b'different')
-        groups = duplicate_groups(self.scan())
-        self.assertEqual(len(groups), 2)
-        self.assertEqual(len(groups[0][1]), 2)
-        self.assertEqual(len(groups[1][1]), 3)
-        self.assertTrue(all(s.path.exists() for s in self.scan()))
-
-    def test_unknown_names_not_duplicate_candidates(self):
-        self.song('A', notes=b'A', meta=''); self.song('B', notes=b'B', meta='')
-        self.assertEqual(duplicate_groups(self.scan()), [])
 
     def test_organize_and_rescan(self):
         source = self.song()

@@ -1,5 +1,5 @@
 # AI:X | 0RWX AI MADE | https://0rwx.com
-"""Clone Hero library operations. No GTK or network dependencies."""
+"""Clone Hero library operations: scanning, archives, hashing and install/move/remove. No network access."""
 from __future__ import annotations
 
 import configparser
@@ -302,22 +302,6 @@ def scan_library(root, cache=None):
     if cache is not None:
         cache.clear(); cache.update(seen)
     return songs, errors
-
-
-def duplicate_groups(songs):
-    """Exact means chart bytes only; metadata matches are candidates, never deletions."""
-    exact, possible = defaultdict(list), defaultdict(list)
-    for song in songs:
-        if song.chart_hash:
-            exact[song.chart_hash].append(song)
-        if song.artist != UNKNOWN and normalized(song.name) and normalized(song.artist):
-            possible[normalized(song.artist), normalized(song.name)].append(song)
-    groups = [('Identical chart files (audio/metadata may differ)', group)
-              for group in exact.values() if len(group) > 1]
-    groups += [('Possible duplicate: same title and artist (may be different charts)', group)
-               for group in possible.values()
-               if len(group) > 1 and len({s.chart_hash for s in group}) > 1]
-    return groups
 
 
 def unique_path(path, reserved=None):
@@ -873,7 +857,7 @@ def deactivate_archived(entries, game_root, trash, expected_paths=None, scan_cac
     count = 0
     for path, _ in targets:
         try:
-            if trash(path) is False: raise OSError('Desktop Trash rejected the operation')
+            if trash(path) is False: raise OSError('Trash rejected the operation')
         except Exception as exc:
             raise OSError(f'{count} song folders moved to Trash before failure: {exc}') from exc
         count += 1

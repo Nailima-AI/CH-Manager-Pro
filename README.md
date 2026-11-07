@@ -6,8 +6,6 @@ A self-hosted web app for managing a [Clone Hero](https://clonehero.net/) song l
 
 Clone Hero itself runs elsewhere (a gaming PC or Steam Deck) and plays from the song folder this server manages, shared over SMB/NFS. The app only manages files; it never needs the game to be open.
 
-> **Looking for the desktop app?** The original GTK4 desktop version for Linux/Steam Deck is kept on the [`desktop`](https://github.com/Nailima-AI/CH-Manager-Pro/tree/desktop) branch.
-
 ## Features
 
 - **Import packs**: upload ZIP, RAR, 7z, TAR (`.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`) or native `.sng` files from the browser, or let the app watch a downloads folder.
@@ -141,19 +139,18 @@ Icon and folder matches are labeled **Likely**: a custom chart can reuse an offi
 python3 -m unittest discover -s tests -v
 ```
 
-The tests run a real HTTP server against temporary folders. Tests needing `7z`, `rar` or GTK skip themselves when those aren't installed. CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) also builds the Docker image and runs an end-to-end smoke test in it, and runs Playwright layout checks at five screen sizes.
+The tests run a real HTTP server against temporary folders. Tests needing `7z` or `rar` skip themselves when those aren't installed. CI ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)) also builds the Docker image and runs an end-to-end smoke test in it, and runs Playwright layout checks at five screen sizes.
 
 | File | What it is |
 | --- | --- |
 | `ch_web.py` | Web server, sign-in and the background job queue |
-| `library_core.py` | Scanning, archive extraction, hashing, install/move/remove (shared with the desktop app) |
+| `library_core.py` | Scanning, archive extraction, hashing, install/move/remove |
 | `web/` | The browser interface: plain HTML, CSS and JavaScript, no build step |
-| `ch_manager_pro.py`, installer | The legacy GTK desktop app; see the `desktop` branch |
 
-AI-made source files start with an `AI:X | 0RWX AI MADE` comment; [CLAUDE.md](CLAUDE.md) has the labeling rules for AI changes to this repo. The installer is not labeled because it is still mostly the upstream author's hand-written code.
+AI-made source files start with an `AI:X | 0RWX AI MADE` comment; [CLAUDE.md](CLAUDE.md) has the labeling rules for AI changes to this repo.
 
 ## License and credits
 
-[MIT](LICENSE). Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-Pro); original copyright and attribution are retained. This fork's changes are AI made and have not been reviewed line by line by a person, so back up your song and archive folders before pointing the app at your main library.
+[MIT](LICENSE). Forked from [aledibe94/CH-Manager-Pro](https://github.com/aledibe94/CH-Manager-Pro), originally a GTK desktop app; original copyright and attribution are retained. This fork's changes are AI made and have not been reviewed line by line by a person, so back up your song and archive folders before pointing the app at your main library.
 
 > Code in this project is labeled AI:X (AI made, not human-reviewed line by line). Framework: https://0rwx.com

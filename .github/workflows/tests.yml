@@ -11,14 +11,13 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb dbus-x11 7zip rar
+          sudo apt-get install -y 7zip rar
       - name: Syntax checks
         run: |
-          bash -n ch_manager_pro_installer_v5.sh
           node --check web/app.js
-          /usr/bin/python3 -m py_compile ch_manager_pro.py library_core.py ch_web.py
-      - name: Backend and real GTK integration tests
-        run: dbus-run-session -- xvfb-run -a /usr/bin/python3 -m unittest discover -s tests -v
+          /usr/bin/python3 -m py_compile library_core.py ch_web.py
+      - name: Library and web server tests
+        run: /usr/bin/python3 -m unittest discover -s tests -v
   docker-compose:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

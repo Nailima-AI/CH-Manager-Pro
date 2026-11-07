@@ -1,6 +1,6 @@
 # CH Manager Pro — headless web
 
-The `main` branch provides a single-user, self-hosted web interface. The previous GTK desktop version is kept on the `desktop` branch. Run it on a Linux server with Python **3.10+**; it needs **no GTK, desktop session, or third-party Python packages**. The Python standard-library HTTP service is intended for a trusted homelab, normally behind an HTTPS reverse proxy or an SSH tunnel.
+CH Manager Pro is a single-user, self-hosted web interface. Run it on a Linux server with Python **3.10+**; it needs **no desktop session or third-party Python packages**. The Python standard-library HTTP service is intended for a trusted homelab, normally behind an HTTPS reverse proxy or an SSH tunnel.
 
 ## Start it
 
@@ -30,7 +30,7 @@ For a different port or persistent data location:
 python3 ch_web.py --data-dir /srv/ch-manager-data --port 8899
 ```
 
-Use **Settings** to set the server's game-song, archive, and download-watch paths. Folders must be writable, separate, and not nested inside each other. Changing a path selects a different collection; it does not migrate old files. Desktop `config.ini` settings are separate: enter the same existing song/archive paths in the web settings to reuse your collection. Never run the GTK app and web service against the same library simultaneously.
+Use **Settings** to set the server's game-song, archive, and download-watch paths. Folders must be writable, separate, and not nested inside each other. Changing a path selects a different collection; it does not migrate old files. To reuse an existing collection, enter its song and archive paths in Settings. Never run another organizer against the same library at the same time.
 
 ## What the web interface supports
 
@@ -57,7 +57,7 @@ Imports that install songs skip any song whose full content is already in the ga
 
 Uploaded originals wait in the data directory's `incoming/` folder until imported. Failed imports remain there for administrator inspection/retry. The default upload limit is **2 GiB per archive**; use `--max-upload-mib 8192` for 8 GiB. Archive extraction can need considerably more temporary disk space than the compressed file; scanning uses the server's temporary directory. Only import trusted chart packs.
 
-Full-content installed-state checks include audio and metadata and can take time on large collections. Edited installed songs may appear not installed and will not be removed as exact archive matches. Native `.sng` files are supported as described below. Game folders directly at the library root, nested songs-inside-songs, and symlinks require manual review, as in the desktop version.
+Full-content installed-state checks include audio and metadata and can take time on large collections. Edited installed songs may appear not installed and will not be removed as exact archive matches. Native `.sng` files are supported as described below. Game folders directly at the library root, nested songs-inside-songs, and symlinks require manual review.
 
 ## Refresh performance and recovery
 
@@ -138,6 +138,6 @@ python3 -m unittest discover -s tests -v
 python3 -m py_compile ch_web.py library_core.py
 ```
 
-The web tests use a real HTTP server and temporary directories to cover authentication, CSRF/Origin/Host rejection, browser uploads, archive-only imports, selective installs, removal/restore, folder previews, duplicate review, configuration persistence, and watching imports without any game-process dependency. Existing backend tests remain. GTK/7z tests run when those dependencies are available. The web version uses the same MIT license as the fork.
+The web tests use a real HTTP server and temporary directories to cover authentication, CSRF/Origin/Host rejection, browser uploads, archive-only imports, selective installs, removal/restore, folder previews, duplicate review, configuration persistence, and watching imports without any game-process dependency. Library tests cover scanning, metadata, archives, SNG files, moves and installs. Tests needing `7z` or `rar` run when those tools are installed. The project uses the same MIT license as the fork.
 
 > Code in this project is labeled AI:X (AI made, not human-reviewed line by line). Framework: https://0rwx.com
